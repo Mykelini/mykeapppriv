@@ -193,6 +193,7 @@ export default function Dashboard() {
   const [newBookmarkSuggestions, setNewBookmarkSuggestions] = useState<LocationSuggestion[]>([]);
   const [selectedBookmarkCoords, setSelectedBookmarkCoords] = useState<{ lat: number; lon: number; name: string } | null>(null);
   const [isSearchingBookmarkAddress, setIsSearchingBookmarkAddress] = useState(false);
+  const [bookmarkSavedFeedback, setBookmarkSavedFeedback] = useState(false);
 
   // Weather State
   const [nextEventWeather, setNextEventWeather] = useState<WeatherData | null>(null);
@@ -844,8 +845,6 @@ export default function Dashboard() {
     return () => clearTimeout(timeoutId);
   }, [newBookmarkAddressQuery, selectedBookmarkCoords]);
 
-  if (!isMounted) return null;
-
   // Helper Mode Switches
   const switchToHomeMode = (base: BaseLocation) => {
     setLocationMode("home");
@@ -1032,7 +1031,6 @@ export default function Dashboard() {
   };
 
   // One-Tap Save Selected Destination to Bookmarks / Segnaposti
-  const [bookmarkSavedFeedback, setBookmarkSavedFeedback] = useState(false);
 
   const handleSaveSelectedDestToBookmarks = () => {
     if (!selectedDest) return;
@@ -1473,7 +1471,7 @@ export default function Dashboard() {
     return { style, text, departureTime, barColor, progress, isLate };
   };
 
-  const CardActionButtons = ({ event }: { event: MasterEvent }) => (
+  const renderCardActionButtons = (event: MasterEvent) => (
     <div className="flex items-center gap-1.5 shrink-0 ml-2">
       <button
         onClick={() => startEditingEvent(event)}
@@ -1971,7 +1969,7 @@ export default function Dashboard() {
                             </span>
                           </div>
                         </div>
-                        <CardActionButtons event={event} />
+                        {renderCardActionButtons(event)}
                       </div>
                     ))}
                   </div>
@@ -2018,7 +2016,7 @@ export default function Dashboard() {
                   <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${categoryStyles[activeEvent.category]}`}>
                     {activeEvent.category}
                   </span>
-                  <CardActionButtons event={activeEvent} />
+                  {renderCardActionButtons(activeEvent)}
                 </div>
               </div>
               <h2 className="text-[22px] leading-tight font-semibold text-slate-800 mb-2.5">{activeEvent.title}</h2>
@@ -2041,7 +2039,7 @@ export default function Dashboard() {
                     <span className={`px-3 py-1 rounded-full text-[11px] font-bold tracking-wide leading-none ${badgeInfo.style}`}>
                       {badgeInfo.text}
                     </span>
-                    <CardActionButtons event={nextEvent} />
+                    {renderCardActionButtons(nextEvent)}
                   </div>
                 </div>
 
@@ -2202,7 +2200,7 @@ export default function Dashboard() {
                       <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border hidden sm:block ${categoryStyles[event.category]}`}>
                         {event.category}
                       </span>
-                      <CardActionButtons event={event} />
+                      {renderCardActionButtons(event)}
                     </div>
                   </div>
                 ))}
