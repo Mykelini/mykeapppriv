@@ -1,15 +1,21 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { format, differenceInMinutes, addMinutes, parse, addDays } from "date-fns";
+import { 
+  format, differenceInMinutes, addMinutes, parse, addDays,
+  startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, isSameDay 
+} from "date-fns";
 import { it } from "date-fns/locale";
 import { 
   Clock, MapPin, Plus, Navigation2, Check, Car, X, Loader2, Sun, 
   Trash2, CheckCircle2, CheckCheck, Undo2, Calendar, Home, Edit3, 
   Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, 
-  Settings, Volume2, Sliders, ShieldAlert, Sparkles, RefreshCw 
+  Settings, Volume2, Sliders, ShieldAlert, Sparkles, Share, PlusSquare, Smartphone,
+  User, LogIn, LogOut, ChevronLeft, ChevronRight, Lock, Mail, Zap
 } from "lucide-react";
 import Image from "next/image";
+import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { fetchRealtimeRoute } from "@/lib/routing";
 
 // --- Types & Schema ---
 type EventCategory = "Lavoro" | "Salute" | "Personale" | "Sport";
@@ -109,39 +115,22 @@ const getWeatherInfo = (code: number, temp: number): WeatherData => {
   return { temp: roundedTemp, code, label, icon, isRainy };
 };
 
-// Robust OSRM Profile Route Duration Calculation
+// Robust Real-Time Route Duration Calculation (Mapbox Traffic + Calibrated OSRM Fallback)
 const fetchOsrmRouteMins = async (
   startCoords: { lat: number; lon: number },
   destCoords: { lat: number; lon: number },
-  mode: TransportMode = "driving"
+  mode: TransportMode = "driving",
+  token?: string | null
 ): Promise<number> => {
-  const profile = mode === "walking" ? "foot" : mode === "cycling" ? "bike" : "driving";
-  try {
-    const url = `https://router.project-osrm.org/route/v1/${profile}/${startCoords.lon},${startCoords.lat};${destCoords.lon},${destCoords.lat}?overview=false`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.code === "Ok" && data.routes && data.routes.length > 0) {
-      return Math.max(1, Math.round(data.routes[0].duration / 60));
-    }
-  } catch (e) {
-    console.warn(`OSRM ${profile} route fetch error:`, e);
-  }
-
-  // Haversine fallback estimate if OSRM is offline
-  const R = 6371;
-  const dLat = (destCoords.lat - startCoords.lat) * (Math.PI / 180);
-  const dLon = (destCoords.lon - startCoords.lon) * (Math.PI / 180);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(startCoords.lat * (Math.PI / 180)) *
-      Math.cos(destCoords.lat * (Math.PI / 180)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distKm = R * c;
-
-  const speedKmh = mode === "walking" ? 4.5 : mode === "cycling" ? 15 : 35;
-  return Math.max(2, Math.round((distKm / speedKmh) * 60));
+  const res = await fetchRealtimeRoute(
+    startCoords.lat,
+    startCoords.lon,
+    destCoords.lat,
+    destCoords.lon,
+    mode,
+    token
+  );
+  return res.durationMinutes;
 };
 
 export default function Dashboard() {
@@ -151,6 +140,25 @@ export default function Dashboard() {
   // Master State
   const [masterEvents, setMasterEvents] = useState<MasterEvent[]>([]);
   const [dateTab, setDateTab] = useState<"oggi" | "domani" | "tutti">("oggi");
+
+  // Supabase Auth & Cloud Sync State
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
+
+  // Mapbox Real-time Traffic Token State
+  const [mapboxToken, setMapboxToken] = useState<string>("");
+
+  // Apple Calendar Interactive State (for "Tutti" tab)
+  const [calendarMonth, setCalendarMonth] = useState<Date>(new Date());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
+
+  // Lock-screen Notification Tester State
+  const [testNotificationCountdown, setTestNotificationCountdown] = useState<number | null>(null);
 
   // Geolocation & Base Memory State
   const [locationMode, setLocationMode] = useState<"home" | "gps">("home");
@@ -164,6 +172,9 @@ export default function Dashboard() {
   const [defaultSafetyBuffer, setDefaultSafetyBuffer] = useState<number>(10);
   const [defaultTransportMode, setDefaultTransportMode] = useState<TransportMode>("driving");
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
+
+  // iOS Standalone Installation Modal State
+  const [isIosInstallModalOpen, setIsIosInstallModalOpen] = useState(false);
 
   // Bookmarks / Saved Places State
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>(DEFAULT_SAVED_PLACES);
@@ -387,6 +398,10 @@ export default function Dashboard() {
       const storedMode = localStorage.getItem("ontime_default_transport") as TransportMode | null;
       if (storedMode) setDefaultTransportMode(storedMode);
 
+      // Load Mapbox Token
+      const storedMapbox = localStorage.getItem("ontime_mapbox_token");
+      if (storedMapbox) setMapboxToken(storedMapbox);
+
       // Load Location Mode
       const storedLocMode = localStorage.getItem("ontime_location_mode") as "home" | "gps" | null;
       const initialMode = storedLocMode || "home";
@@ -409,7 +424,86 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Manage Departure Notification & Chime in Ticker
+  // Supabase Auth Session Listener
+  useEffect(() => {
+    if (!isMounted || !isSupabaseConfigured || !supabase) return;
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setAuthUser(session?.user ?? null);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [isMounted]);
+
+  // Sync Supabase Events on login
+  useEffect(() => {
+    if (!isMounted || !authUser || !supabase || !isSupabaseConfigured) return;
+    const client = supabase;
+
+    const syncWithSupabase = async () => {
+      try {
+        const { data, error } = await client
+          .from("events")
+          .select("*")
+          .eq("user_id", authUser.id)
+          .order("created_at", { ascending: true });
+
+        if (error) {
+          console.warn("Supabase load error:", error);
+          return;
+        }
+
+        if (data && data.length > 0) {
+          const synced: MasterEvent[] = data.map((row: any) => ({
+            id: row.id,
+            title: row.title,
+            category: row.category as EventCategory,
+            date: row.date,
+            targetTime: row.target_time,
+            destinationName: row.destination_name,
+            destinationCoords: row.destination_coords,
+            bufferMinutes: row.buffer_minutes,
+            checklist: Array.isArray(row.checklist) ? row.checklist : [],
+            status: row.status as EventStatus,
+            completedAt: row.completed_at || undefined,
+            travelTimeMins: row.travel_time_mins || 10,
+            transportMode: (row.transport_mode as TransportMode) || "driving",
+          }));
+          setMasterEvents(synced);
+        } else if (masterEvents.length > 0) {
+          // Push existing local guest events to Supabase cloud
+          for (const ev of masterEvents) {
+            await client.from("events").upsert({
+              id: ev.id,
+              user_id: authUser.id,
+              title: ev.title,
+              category: ev.category,
+              date: ev.date,
+              target_time: ev.targetTime,
+              destination_name: ev.destinationName,
+              destination_coords: ev.destinationCoords,
+              transport_mode: ev.transportMode || "driving",
+              buffer_minutes: ev.bufferMinutes,
+              checklist: ev.checklist,
+              status: ev.status,
+              completed_at: ev.completedAt || null,
+              travel_time_mins: ev.travelTimeMins || 10,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Supabase sync error:", err);
+      }
+    };
+
+    syncWithSupabase();
+  }, [authUser, isMounted]);
+
+  // Manage Departure Notification, SW PostMessage & Chime in Ticker
   useEffect(() => {
     if (!isMounted || masterEvents.length === 0) return;
 
@@ -426,19 +520,28 @@ export default function Dashboard() {
         setNotifiedKeys((prev) => new Set(prev).add(depKey));
         playDepartureChime();
 
-        const title = "🚗 È ora di uscire!";
-        const options = {
-          body: `${ev.title} ti aspetta. Tragitto stimato: ${travelMins} min.`,
-          icon: "/logo.png",
-          badge: "/logo.png",
-          vibrate: vibrationEnabled ? [200, 100, 200] : undefined,
-          tag: `departure_${ev.id}`,
-        };
+        if (vibrationEnabled && typeof navigator !== "undefined" && "vibrate" in navigator) {
+          navigator.vibrate([300, 150, 300]);
+        }
 
-        if (swRegistration && "showNotification" in swRegistration) {
-          swRegistration.showNotification(title, options);
+        const title = `🚗 È ora di uscire! - ${ev.title}`;
+        const body = `Tragitto stimato: ${travelMins} min verso ${ev.destinationName}.`;
+
+        const swController = swRegistration?.active || (typeof navigator !== "undefined" && navigator.serviceWorker?.controller);
+        if (swController) {
+          swController.postMessage({
+            type: "NOTIFY_DEPARTURE",
+            title,
+            body,
+            icon: "/logo.png",
+          });
         } else if ("Notification" in window && Notification.permission === "granted") {
-          new Notification(title, options);
+          new Notification(title, {
+            body,
+            icon: "/logo.png",
+            badge: "/logo.png",
+            vibrate: vibrationEnabled ? [200, 100, 200, 100, 200] : undefined,
+          } as any);
         }
       }
     });
@@ -532,7 +635,7 @@ export default function Dashboard() {
         masterEvents.map(async (ev) => {
           if (ev.status !== "active" || !ev.destinationCoords?.lat || !ev.destinationCoords?.lon) return ev;
           try {
-            const newMins = await fetchOsrmRouteMins(currentLoc, ev.destinationCoords, ev.transportMode || "driving");
+            const newMins = await fetchOsrmRouteMins(currentLoc, ev.destinationCoords, ev.transportMode || "driving", mapboxToken);
             if (newMins !== ev.travelTimeMins) {
               updated = true;
               return { ...ev, travelTimeMins: newMins };
@@ -550,7 +653,7 @@ export default function Dashboard() {
     };
 
     recalculateRoutes();
-  }, [currentLoc]);
+  }, [currentLoc, mapboxToken]);
 
   // Filter Active vs Completed
   const activeEvents = masterEvents.filter((e) => e.status === "active");
@@ -682,42 +785,66 @@ export default function Dashboard() {
     setIsLocationModalOpen(false);
   };
 
+  // Toggle Notifications with iOS Standalone Detection & SW PostMessage
   const toggleNotifications = async () => {
+    if (typeof window === "undefined") return;
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as any).standalone === true;
+
+    // If on iOS and NOT installed to Home Screen as PWA, show Apple Install Guide modal
+    if (isIOS && !isStandalone) {
+      setIsIosInstallModalOpen(true);
+      return;
+    }
+
     if (!("Notification" in window)) {
       return alert("Le notifiche non sono supportate da questo browser.");
     }
 
-    const perm = await Notification.requestPermission();
-    if (perm === "granted") {
-      setNotificationsEnabled(true);
-      playDepartureChime();
-
+    try {
       let reg = swRegistration;
       if (!reg && "serviceWorker" in navigator) {
-        try {
-          reg = await navigator.serviceWorker.register("/sw.js");
-          setSwRegistration(reg);
-        } catch (e) {
-          console.warn("SW registration error:", e);
+        reg = await navigator.serviceWorker.register("/sw.js");
+        setSwRegistration(reg);
+      }
+
+      const perm = await Notification.requestPermission();
+      if (perm === "granted") {
+        setNotificationsEnabled(true);
+        playDepartureChime();
+
+        if (vibrationEnabled && "vibrate" in navigator) {
+          navigator.vibrate([200, 100, 200]);
         }
-      }
 
-      const title = "🔔 Notifiche OnTime attive";
-      const options = {
-        body: "Ti avviseremo sul blocco schermo quando è ora di uscire!",
-        icon: "/logo.png",
-        badge: "/logo.png",
-        vibrate: vibrationEnabled ? [200, 100, 200] : undefined,
-      };
-
-      if (reg && "showNotification" in reg) {
-        reg.showNotification(title, options);
+        const swController = reg?.active || navigator.serviceWorker?.controller;
+        if (swController) {
+          swController.postMessage({
+            type: "NOTIFY_DEPARTURE",
+            title: "🔔 OnTime Attivo",
+            body: "Le notifiche di partenza su blocco schermo sono pronte!",
+            icon: "/logo.png",
+          });
+        } else if (reg && "showNotification" in reg) {
+          reg.showNotification("🔔 OnTime Attivo", {
+            body: "Le notifiche di partenza su blocco schermo sono pronte!",
+            icon: "/logo.png",
+            badge: "/logo.png",
+          });
+        } else {
+          new Notification("🔔 OnTime Attivo", {
+            body: "Le notifiche di partenza su blocco schermo sono pronte!",
+            icon: "/logo.png",
+          });
+        }
       } else {
-        new Notification(title, options);
+        setNotificationsEnabled(false);
+        alert("Permesso notifiche negato.");
       }
-    } else {
-      setNotificationsEnabled(false);
-      alert("Permesso notifiche negato.");
+    } catch (err) {
+      console.error("Error setting up notifications:", err);
+      alert("Impossibile attivare le notifiche.");
     }
   };
 
@@ -834,25 +961,198 @@ export default function Dashboard() {
     setIsFabOpen(true);
   };
 
-  // Actions
-  const deleteEvent = (id: string) => {
+  // Actions with Supabase Cloud Sync
+  const deleteEvent = async (id: string) => {
     if (window.confirm("Sei sicuro di voler eliminare definitivamente questo evento?")) {
       setMasterEvents((prev) => prev.filter((e) => e.id !== id));
+      if (authUser && supabase && isSupabaseConfigured) {
+        try {
+          await supabase.from("events").delete().eq("id", id).eq("user_id", authUser.id);
+        } catch (e) {
+          console.warn("Supabase delete error:", e);
+        }
+      }
     }
   };
 
-  const completeEvent = (id: string) => {
+  const completeEvent = async (id: string) => {
+    const completedAt = new Date().toISOString();
     setMasterEvents((prev) =>
       prev.map((e) =>
-        e.id === id ? { ...e, status: "completed", completedAt: new Date().toISOString() } : e
+        e.id === id ? { ...e, status: "completed", completedAt } : e
       )
     );
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        await supabase
+          .from("events")
+          .update({ status: "completed", completed_at: completedAt })
+          .eq("id", id)
+          .eq("user_id", authUser.id);
+      } catch (e) {
+        console.warn("Supabase complete error:", e);
+      }
+    }
   };
 
-  const restoreEvent = (id: string) => {
+  const restoreEvent = async (id: string) => {
     setMasterEvents((prev) =>
       prev.map((e) => (e.id === id ? { ...e, status: "active", completedAt: undefined } : e))
     );
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        await supabase
+          .from("events")
+          .update({ status: "active", completed_at: null })
+          .eq("id", id)
+          .eq("user_id", authUser.id);
+      } catch (e) {
+        console.warn("Supabase restore error:", e);
+      }
+    }
+  };
+
+  // Quick Mode Change on Active Card with Instant Recalculation
+  const handleQuickModeChange = async (eventId: string, newMode: TransportMode) => {
+    const target = masterEvents.find((e) => e.id === eventId);
+    if (!target || !currentLoc || !target.destinationCoords) return;
+
+    const newTravelMins = await fetchOsrmRouteMins(
+      currentLoc,
+      target.destinationCoords,
+      newMode,
+      mapboxToken
+    );
+
+    setMasterEvents((prev) =>
+      prev.map((e) =>
+        e.id === eventId
+          ? { ...e, transportMode: newMode, travelTimeMins: newTravelMins }
+          : e
+      )
+    );
+
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        await supabase
+          .from("events")
+          .update({ transport_mode: newMode, travel_time_mins: newTravelMins })
+          .eq("id", eventId)
+          .eq("user_id", authUser.id);
+      } catch (err) {
+        console.warn("Supabase mode update error:", err);
+      }
+    }
+  };
+
+  // Lock-screen Notification 5-second Tester
+  const triggerLockScreenTest = () => {
+    if (testNotificationCountdown !== null) return;
+    setTestNotificationCountdown(5);
+
+    let remaining = 5;
+    const timer = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setTestNotificationCountdown(remaining);
+      } else {
+        clearInterval(timer);
+        setTestNotificationCountdown(null);
+
+        playDepartureChime();
+
+        if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+          try {
+            navigator.vibrate([300, 150, 300, 150, 300]);
+          } catch {}
+        }
+
+        const notifTitle = "🚗 OnTime: È ora di uscire!";
+        const notifBody = "Test riuscito! Le notifiche su blocco schermo funzionano perfettamente.";
+
+        if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+          navigator.serviceWorker.ready.then((reg) => {
+            reg.showNotification(notifTitle, {
+              body: notifBody,
+              icon: "/logo.png",
+              badge: "/logo.png",
+              vibrate: [300, 150, 300, 150, 300],
+              tag: "test-departure",
+              renotify: true,
+              requireInteraction: true,
+              data: { url: "/" },
+            } as any);
+          }).catch(() => {
+            if ("Notification" in window && Notification.permission === "granted") {
+              new Notification(notifTitle, {
+                body: notifBody,
+                icon: "/logo.png",
+              });
+            }
+          });
+        } else if ("Notification" in window && Notification.permission === "granted") {
+          new Notification(notifTitle, {
+            body: notifBody,
+            icon: "/logo.png",
+          });
+        }
+      }
+    }, 1000);
+  };
+
+  // Supabase Auth Submit (Login / Register)
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabase || !isSupabaseConfigured) {
+      setAuthMessage({ type: "error", text: "Supabase non è configurato con le variabili d'ambiente." });
+      return;
+    }
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthMessage({ type: "error", text: "Compila email e password." });
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthMessage(null);
+
+    try {
+      if (authMode === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        setAuthUser(data.user);
+        setIsAuthModalOpen(false);
+      } else {
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        if (data.session?.user) {
+          setAuthUser(data.session.user);
+          setIsAuthModalOpen(false);
+        } else {
+          setAuthMessage({
+            type: "success",
+            text: "Account registrato! Controlla la tua email di conferma o effettua il login.",
+          });
+        }
+      }
+    } catch (err: any) {
+      setAuthMessage({ type: "error", text: err.message || "Errore di autenticazione" });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (supabase && isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    }
+    setAuthUser(null);
+    setIsAuthModalOpen(false);
   };
 
   const handleSaveEvent = async () => {
@@ -884,29 +1184,53 @@ export default function Dashboard() {
 
     let finalTravelTime = 10;
     if (currentLoc && destCoords) {
-      finalTravelTime = await fetchOsrmRouteMins(currentLoc, destCoords, newEventTransportMode);
+      finalTravelTime = await fetchOsrmRouteMins(currentLoc, destCoords, newEventTransportMode, mapboxToken);
     }
 
     if (editingEventId) {
+      const updatedEventData = {
+        title: newEventTitle.trim(),
+        category: newEventCategory,
+        date: newEventDate,
+        targetTime: newEventTime,
+        destinationName: destName,
+        destinationCoords: destCoords,
+        bufferMinutes: newEventBuffer,
+        checklist: newEventChecklist,
+        transportMode: newEventTransportMode,
+        travelTimeMins: finalTravelTime,
+      };
+
       setMasterEvents((prev) =>
         prev.map((e) =>
           e.id === editingEventId
-            ? {
-                ...e,
-                title: newEventTitle.trim(),
-                category: newEventCategory,
-                date: newEventDate,
-                targetTime: newEventTime,
-                destinationName: destName,
-                destinationCoords: destCoords,
-                bufferMinutes: newEventBuffer,
-                checklist: newEventChecklist,
-                transportMode: newEventTransportMode,
-                travelTimeMins: finalTravelTime,
-              }
+            ? { ...e, ...updatedEventData }
             : e
         )
       );
+
+      if (authUser && supabase && isSupabaseConfigured) {
+        try {
+          await supabase
+            .from("events")
+            .update({
+              title: updatedEventData.title,
+              category: updatedEventData.category,
+              date: updatedEventData.date,
+              target_time: updatedEventData.targetTime,
+              destination_name: updatedEventData.destinationName,
+              destination_coords: updatedEventData.destinationCoords,
+              buffer_minutes: updatedEventData.bufferMinutes,
+              checklist: updatedEventData.checklist,
+              transport_mode: updatedEventData.transportMode,
+              travel_time_mins: updatedEventData.travelTimeMins,
+            })
+            .eq("id", editingEventId)
+            .eq("user_id", authUser.id);
+        } catch (e) {
+          console.warn("Supabase update error:", e);
+        }
+      }
     } else {
       const newEv: MasterEvent = {
         id: Math.random().toString(),
@@ -924,6 +1248,28 @@ export default function Dashboard() {
       };
 
       setMasterEvents((prev) => [...prev, newEv]);
+
+      if (authUser && supabase && isSupabaseConfigured) {
+        try {
+          await supabase.from("events").insert({
+            id: newEv.id,
+            user_id: authUser.id,
+            title: newEv.title,
+            category: newEv.category,
+            date: newEv.date,
+            target_time: newEv.targetTime,
+            destination_name: newEv.destinationName,
+            destination_coords: newEv.destinationCoords,
+            buffer_minutes: newEv.bufferMinutes,
+            checklist: newEv.checklist,
+            status: newEv.status,
+            transport_mode: newEv.transportMode,
+            travel_time_mins: newEv.travelTimeMins,
+          });
+        } catch (e) {
+          console.warn("Supabase insert error:", e);
+        }
+      }
     }
 
     setEditingEventId(null);
@@ -1054,6 +1400,29 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* SUPABASE USER AUTH BUTTON */}
+            <button
+              onClick={() => {
+                setAuthMessage(null);
+                setIsAuthModalOpen(true);
+              }}
+              title={authUser ? `Connesso come: ${authUser.email}` : "Accedi / Sincronizza Account"}
+              className={`w-8 h-8 rounded-full transition-colors flex items-center justify-center shadow-sm relative ${
+                authUser
+                  ? "bg-blue-600 text-white shadow-md font-bold text-xs"
+                  : "bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-slate-800"
+              }`}
+            >
+              {authUser ? (
+                <span>{(authUser.email?.[0] || "U").toUpperCase()}</span>
+              ) : (
+                <User className="w-4 h-4" />
+              )}
+              {authUser && (
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
+              )}
+            </button>
+
             {/* SETTINGS GEAR BUTTON */}
             <button
               onClick={() => setIsSettingsOpen(true)}
@@ -1154,8 +1523,200 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="px-5 flex flex-col gap-5 flex-1">
-          {/* EMPTY STATE */}
+        {dateTab === "tutti" ? (
+          <div className="px-5 flex flex-col gap-5 flex-1">
+            {/* APPLE CALENDAR CARD */}
+            <div className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100/60">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 capitalize">
+                    {format(calendarMonth, "MMMM yyyy", { locale: it })}
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-medium">Tocca un giorno per vedere gli impegni</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setCalendarMonth((prev) => subMonths(prev, 1))}
+                    className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors"
+                    title="Mese precedente"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      const today = new Date();
+                      setCalendarMonth(today);
+                      setSelectedCalendarDate(format(today, "yyyy-MM-dd"));
+                    }}
+                    className="px-3 py-1 text-xs font-bold rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+                  >
+                    Oggi
+                  </button>
+                  <button
+                    onClick={() => setCalendarMonth((prev) => addMonths(prev, 1))}
+                    className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors"
+                    title="Mese successivo"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-7 gap-1 text-center mb-2">
+                {["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"].map((d) => (
+                  <span key={d} className="text-[11px] font-bold text-slate-400 uppercase tracking-wider py-1">
+                    {d}
+                  </span>
+                ))}
+              </div>
+
+              {(() => {
+                const monthStart = startOfMonth(calendarMonth);
+                const monthEnd = endOfMonth(calendarMonth);
+                const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
+                let startDay = getDay(monthStart) - 1;
+                if (startDay === -1) startDay = 6;
+                const blanks = Array.from({ length: startDay });
+
+                return (
+                  <div className="grid grid-cols-7 gap-1">
+                    {blanks.map((_, i) => (
+                      <div key={`blank-${i}`} className="h-11" />
+                    ))}
+                    {daysInMonth.map((day) => {
+                      const dayStr = format(day, "yyyy-MM-dd");
+                      const isSelected = selectedCalendarDate === dayStr;
+                      const isToday = dayStr === todayStr;
+                      const dayEvents = masterEvents.filter((e) => e.date === dayStr && e.status === "active");
+
+                      return (
+                        <button
+                          key={dayStr}
+                          onClick={() => setSelectedCalendarDate(dayStr)}
+                          className={`h-11 rounded-[12px] flex flex-col items-center justify-center relative transition-all ${
+                            isSelected
+                              ? "bg-slate-900 text-white font-bold shadow-sm"
+                              : isToday
+                              ? "bg-blue-50 text-blue-600 font-bold border border-blue-200"
+                              : "hover:bg-slate-100 text-slate-700 font-medium"
+                          }`}
+                        >
+                          <span className="text-xs leading-none">{format(day, "d")}</span>
+                          {dayEvents.length > 0 && (
+                            <div className="flex items-center gap-0.5 mt-1">
+                              {dayEvents.slice(0, 3).map((ev, idx) => {
+                                const dotColor =
+                                  ev.category === "Sport"
+                                    ? "bg-orange-500"
+                                    : ev.category === "Lavoro"
+                                    ? "bg-emerald-500"
+                                    : ev.category === "Salute"
+                                    ? "bg-blue-500"
+                                    : "bg-amber-500";
+                                return (
+                                  <span
+                                    key={idx}
+                                    className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : dotColor}`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* SELECTED DATE EVENTS LIST */}
+            <div className="flex flex-col gap-3">
+              <div className="flex justify-between items-center px-1">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  {selectedCalendarDate === todayStr
+                    ? "Impegni di Oggi"
+                    : `Impegni del ${format(parse(selectedCalendarDate, "yyyy-MM-dd", new Date()), "d MMMM yyyy", { locale: it })}`}
+                </h3>
+                <button
+                  onClick={() => {
+                    setEditingEventId(null);
+                    setNewEventDate(selectedCalendarDate);
+                    setNewEventBuffer(defaultSafetyBuffer);
+                    setNewEventTransportMode(defaultTransportMode);
+                    setIsFabOpen(true);
+                  }}
+                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Aggiungi
+                </button>
+              </div>
+
+              {(() => {
+                const selectedDayEvents = masterEvents
+                  .filter((e) => e.date === selectedCalendarDate)
+                  .sort((a, b) => a.targetTime.localeCompare(b.targetTime));
+
+                if (selectedDayEvents.length === 0) {
+                  return (
+                    <div className="bg-white rounded-[20px] p-6 text-center border border-slate-100/60 shadow-sm">
+                      <p className="text-xs font-medium text-slate-400">Nessun impegno in programma per questa data.</p>
+                      <button
+                        onClick={() => {
+                          setEditingEventId(null);
+                          setNewEventDate(selectedCalendarDate);
+                          setNewEventBuffer(defaultSafetyBuffer);
+                          setNewEventTransportMode(defaultTransportMode);
+                          setIsFabOpen(true);
+                        }}
+                        className="mt-3 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-full inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Pianifica impegno
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="flex flex-col gap-3">
+                    {selectedDayEvents.map((event) => (
+                      <div
+                        key={event.id}
+                        className={`bg-white rounded-[20px] p-4 shadow-sm border border-slate-100/60 flex justify-between items-center ${
+                          event.status === "completed" ? "opacity-60 bg-slate-50" : ""
+                        }`}
+                      >
+                        <div className="flex-1 pr-3">
+                          <div className="flex items-center gap-2">
+                            <h4 className={`font-semibold text-[15px] line-clamp-1 ${event.status === "completed" ? "line-through text-slate-500" : "text-slate-800"}`}>
+                              {event.title}
+                            </h4>
+                            <span className={`px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border ${categoryStyles[event.category]}`}>
+                              {event.category}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-500 mt-1.5">
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-slate-400" />
+                              {event.targetTime}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                              <span className="line-clamp-1 max-w-[150px]">{event.destinationName}</span>
+                            </span>
+                          </div>
+                        </div>
+                        <CardActionButtons event={event} />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 flex flex-col gap-5 flex-1">
+            {/* EMPTY STATE */}
           {sortedEvents.length === 0 && (
             <div className="bg-white rounded-[24px] p-8 shadow-sm border border-slate-100/60 flex flex-col items-center justify-center text-center mt-4">
               <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mb-5">
@@ -1259,28 +1820,61 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* ROUTE & TRANSPORT MODE SUMMARY */}
+                {/* ROUTE & TRANSPORT MODE SUMMARY WITH INSTANT MODE SWITCHER */}
                 <div className="bg-[#F5F5F7] rounded-[16px] p-4 mb-6">
-                  <div className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-slate-600 mb-2">
-                    {mode === "walking" ? (
-                      <Footprints className="w-4 h-4 text-slate-500 shrink-0" />
-                    ) : mode === "cycling" ? (
-                      <Bike className="w-4 h-4 text-slate-500 shrink-0" />
-                    ) : (
-                      <Car className="w-4 h-4 text-slate-500 shrink-0" />
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                    {/* Instant Transport Mode Switcher */}
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-[12px] border border-slate-200/80 shadow-xs">
+                      <button
+                        onClick={() => handleQuickModeChange(nextEvent.id, "driving")}
+                        title="Viaggio in auto"
+                        className={`px-2.5 py-1 rounded-[8px] text-xs font-semibold flex items-center gap-1 transition-all ${
+                          mode === "driving"
+                            ? "bg-slate-900 text-white shadow-xs"
+                            : "text-slate-500 hover:text-slate-900"
+                        }`}
+                      >
+                        <Car className="w-3.5 h-3.5" /> Auto
+                      </button>
+                      <button
+                        onClick={() => handleQuickModeChange(nextEvent.id, "walking")}
+                        title="A piedi"
+                        className={`px-2.5 py-1 rounded-[8px] text-xs font-semibold flex items-center gap-1 transition-all ${
+                          mode === "walking"
+                            ? "bg-slate-900 text-white shadow-xs"
+                            : "text-slate-500 hover:text-slate-900"
+                        }`}
+                      >
+                        <Footprints className="w-3.5 h-3.5" /> Piedi
+                      </button>
+                      <button
+                        onClick={() => handleQuickModeChange(nextEvent.id, "cycling")}
+                        title="In bicicletta"
+                        className={`px-2.5 py-1 rounded-[8px] text-xs font-semibold flex items-center gap-1 transition-all ${
+                          mode === "cycling"
+                            ? "bg-slate-900 text-white shadow-xs"
+                            : "text-slate-500 hover:text-slate-900"
+                        }`}
+                      >
+                        <Bike className="w-3.5 h-3.5" /> Bici
+                      </button>
+                    </div>
+
+                    {nextEventWeather && (
+                      <div className="text-xs font-bold text-slate-700 flex items-center gap-1 bg-white px-2.5 py-1 rounded-[12px] border border-slate-200/80 shadow-xs">
+                        <span>{nextEventWeather.icon}</span>
+                        <span>{nextEventWeather.temp}°C</span>
+                      </div>
                     )}
-                    <span>
-                      {mode === "walking" ? "A piedi" : mode === "cycling" ? "In bici" : "In auto"}: ~{nextEvent.travelTimeMins || 10} min
-                      {nextEventWeather && (
-                        <span className="font-bold text-slate-800 ml-1">
-                          • {nextEventWeather.icon} {nextEventWeather.temp}°C
-                        </span>
-                      )}
-                      {" "}• Cuscinetto: +{nextEvent.bufferMinutes} min
-                    </span>
                   </div>
-                  <div className="text-[13px] font-bold text-slate-800 ml-6">
-                    Orario di uscita: {format(badgeInfo.departureTime, "HH:mm")}
+
+                  <div className="flex items-center justify-between text-[13px] font-medium text-slate-600">
+                    <span>
+                      Tragitto: <span className="font-bold text-slate-800">~{nextEvent.travelTimeMins || 10} min</span> (Cuscinetto: +{nextEvent.bufferMinutes} min)
+                    </span>
+                    <span className="font-bold text-slate-900">
+                      Uscita: {format(badgeInfo.departureTime, "HH:mm")}
+                    </span>
                   </div>
                 </div>
 
@@ -1351,6 +1945,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+      )}
       </div>
 
       {/* FAB */}
@@ -1374,6 +1969,65 @@ export default function Dashboard() {
         >
           <Plus className="w-6 h-6" />
         </button>
+      )}
+
+      {/* iOS SAFARI PWA INSTALL GUIDE MODAL */}
+      {isIosInstallModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 backdrop-blur-md p-4 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-[32px] p-6 shadow-2xl animate-in zoom-in-95 duration-300 relative">
+            <button
+              onClick={() => setIsIosInstallModalOpen(false)}
+              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="w-14 h-14 bg-blue-50 rounded-2xl flex items-center justify-center mb-4">
+              <Smartphone className="w-7 h-7 text-blue-600" />
+            </div>
+
+            <h2 className="text-[20px] font-bold text-slate-900 mb-2">Installa OnTime per le Notifiche</h2>
+            <p className="text-[13px] text-slate-500 font-medium leading-relaxed mb-6">
+              Su iPhone (iOS), le notifiche su blocco schermo funzionano solo dopo aver aggiunto l'app alla schermata Home.
+            </p>
+
+            <div className="flex flex-col gap-3 bg-[#F5F5F7] p-4 rounded-[20px] mb-6 border border-slate-100">
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                  1
+                </div>
+                <p className="text-xs font-semibold text-slate-700">
+                  Tocca l'icona <span className="font-bold text-blue-600">Condividi</span> in basso su Safari <span className="text-base">⎋</span>.
+                </p>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                  2
+                </div>
+                <p className="text-xs font-semibold text-slate-700">
+                  Scorri e seleziona <span className="font-bold text-slate-900">"Aggiungi alla schermata Home"</span> ➕.
+                </p>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                  3
+                </div>
+                <p className="text-xs font-semibold text-slate-700">
+                  Apri OnTime dalla Home del telefono e tocca di nuovo la campanella per attivarle!
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsIosInstallModalOpen(false)}
+              className="w-full bg-slate-900 text-white rounded-[16px] py-3.5 font-semibold text-sm shadow-sm hover:scale-[1.01] transition-transform"
+            >
+              Ho capito
+            </button>
+          </div>
+        </div>
       )}
 
       {/* SETTINGS MODAL SHEET */}
@@ -1520,6 +2174,62 @@ export default function Dashboard() {
                     🔊 Test Suono
                   </button>
                 </div>
+              </div>
+
+              {/* SECTION: MAPBOX TRAFFICO IN TEMPO REALE */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-blue-600" />
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Traffico Mapbox</h3>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${mapboxToken ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
+                    {mapboxToken ? "Attivo" : "Fallback OSRM"}
+                  </span>
+                </div>
+                <p className="text-[12px] text-slate-500 leading-snug">
+                  Inserisci il token Mapbox Directions per calcolare i tempi con traffico in tempo reale.
+                </p>
+                <input
+                  type="password"
+                  value={mapboxToken}
+                  onChange={(e) => {
+                    setMapboxToken(e.target.value);
+                    localStorage.setItem("ontime_mapbox_token", e.target.value);
+                  }}
+                  placeholder="pk.eyJ1..."
+                  className="w-full bg-white text-xs px-3 py-2.5 rounded-[12px] border border-slate-200 focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+
+              {/* SECTION: TEST NOTIFICA SU BLOCCO SCHERMO */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-slate-700" />
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Test Blocco Schermo</h3>
+                </div>
+                <p className="text-[12px] text-slate-500 leading-snug">
+                  Premi il pulsante, poi blocca subito lo schermo con il tasto laterale del telefono per verificare suoni e vibrazione.
+                </p>
+                <button
+                  onClick={triggerLockScreenTest}
+                  disabled={testNotificationCountdown !== null}
+                  className="w-full py-3 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-400 rounded-[14px] text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-sm"
+                >
+                  {testNotificationCountdown !== null
+                    ? `⏳ Blocca ora lo schermo! (${testNotificationCountdown}s)`
+                    : "🧪 Testa Notifica Blocco Schermo (tra 5 sec)"}
+                </button>
+                {testNotificationCountdown !== null && (
+                  <div className="p-3 bg-blue-50 rounded-[12px] border border-blue-200 text-center animate-pulse">
+                    <p className="text-xs font-bold text-blue-800">
+                      Premi subito il tasto laterale per bloccare lo schermo!
+                    </p>
+                    <p className="text-[11px] text-blue-600 mt-0.5">
+                      Notifica e suono partiranno tra {testNotificationCountdown} secondi.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* SECTION 4: RESET DATI */}
@@ -2212,7 +2922,7 @@ export default function Dashboard() {
                         onClick={handleAddCustomChecklistItem}
                         className="w-5 h-5 bg-blue-600 text-white rounded-full flex items-center justify-center shrink-0"
                       >
-                        <Check className="w-3 h-3" />
+                        <Check className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => {
@@ -2256,6 +2966,141 @@ export default function Dashboard() {
             </div>
 
             <div className="h-4 sm:h-0" />
+          </div>
+        </div>
+      )}
+
+      {/* SUPABASE AUTHENTICATION & SYNC MODAL SHEET */}
+      {isAuthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative">
+            <button
+              onClick={() => {
+                setIsAuthModalOpen(false);
+                setAuthMessage(null);
+              }}
+              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {authUser ? (
+              <div className="flex flex-col items-center text-center py-2">
+                <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center text-2xl font-bold mb-3 shadow-md">
+                  {(authUser.email?.[0] || "U").toUpperCase()}
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 mb-1">Account Sincronizzato</h2>
+                <p className="text-xs text-slate-500 font-medium mb-4">{authUser.email}</p>
+
+                <div className="w-full bg-emerald-50 border border-emerald-200/80 rounded-[16px] p-3 mb-6 flex items-center gap-2.5 text-left">
+                  <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full shrink-0" />
+                  <p className="text-xs font-semibold text-emerald-800">
+                    Sincronizzazione cloud attiva in tempo reale con Supabase.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleLogout}
+                  className="w-full py-3.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-[16px] font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" /> Disconnetti Account
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-3 text-blue-600">
+                  <User className="w-6 h-6" />
+                </div>
+                <h2 className="text-[22px] font-bold text-slate-900 mb-1">Sincronizzazione Cloud</h2>
+                <p className="text-xs text-slate-500 font-medium mb-5">
+                  Sincronizza i tuoi impegni in tempo reale su iPhone, iPad e Desktop.
+                </p>
+
+                {/* Tab Switcher: Login vs Registrati */}
+                <div className="flex bg-slate-100 p-1 rounded-[14px] mb-4">
+                  <button
+                    onClick={() => {
+                      setAuthMode("login");
+                      setAuthMessage(null);
+                    }}
+                    className={`flex-1 py-2 text-xs font-bold rounded-[10px] transition-all ${
+                      authMode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Accedi
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAuthMode("signup");
+                      setAuthMessage(null);
+                    }}
+                    className={`flex-1 py-2 text-xs font-bold rounded-[10px] transition-all ${
+                      authMode === "signup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Crea Account
+                  </button>
+                </div>
+
+                <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3">
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="La tua email"
+                      className="w-full bg-[#F5F5F7] text-xs font-medium pl-10 pr-3 py-3 rounded-[14px] border border-slate-200 focus:outline-none focus:border-blue-500 text-slate-800"
+                    />
+                  </div>
+
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Password"
+                      className="w-full bg-[#F5F5F7] text-xs font-medium pl-10 pr-3 py-3 rounded-[14px] border border-slate-200 focus:outline-none focus:border-blue-500 text-slate-800"
+                    />
+                  </div>
+
+                  {authMessage && (
+                    <div
+                      className={`p-3 rounded-[12px] text-xs font-semibold ${
+                        authMessage.type === "error"
+                          ? "bg-red-50 text-red-600 border border-red-200"
+                          : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                      }`}
+                    >
+                      {authMessage.text}
+                    </div>
+                  )}
+
+                  {!isSupabaseConfigured && (
+                    <p className="text-[11px] text-amber-600 bg-amber-50 p-2.5 rounded-[12px] border border-amber-200/80">
+                      💡 Nota: Per abilitare il salvataggio su Supabase, aggiungi <code className="font-mono">NEXT_PUBLIC_SUPABASE_URL</code> e <code className="font-mono">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> alle variabili d'ambiente. Senza chiavi, l'app usa il salvataggio locale.
+                    </p>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full mt-2 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-[16px] text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-sm"
+                  >
+                    {authLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : authMode === "login" ? (
+                      "Accedi"
+                    ) : (
+                      "Crea Account"
+                    )}
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
         </div>
       )}
