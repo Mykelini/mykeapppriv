@@ -146,6 +146,7 @@ export default function Dashboard() {
   // Supabase Auth & Cloud Sync State
   const [authUser, setAuthUser] = useState<any>(null);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
@@ -241,6 +242,7 @@ export default function Dashboard() {
 
   // Web Audio Synthesizer Chime
   const playDepartureChime = () => {
+    if (typeof window === "undefined") return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
@@ -483,6 +485,14 @@ export default function Dashboard() {
 
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Safety fallback: ensure loading screen resolves within 1.2s
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAuthChecking(false);
+    }, 1200);
+    return () => clearTimeout(timer);
   }, []);
 
   // Supabase Auth Session Listener
@@ -1245,6 +1255,7 @@ export default function Dashboard() {
       await supabase.auth.signOut();
     }
     setAuthUser(null);
+    setIsGuestMode(false);
     setMasterEvents([]);
     if (typeof window !== "undefined") {
       localStorage.removeItem("ontime_master_events");
@@ -1516,8 +1527,8 @@ export default function Dashboard() {
     );
   }
 
-  // Apple Authentication Gate (Locked App until user signs in/up)
-  if (!authUser) {
+  // Apple Authentication Gate (Locked App until user signs in/up or chooses local mode)
+  if (!authUser && !isGuestMode) {
     return (
       <main className="flex flex-col min-h-screen bg-[#F5F5F7] items-center justify-center p-6 relative overflow-hidden font-sans">
         {/* Ambient Glow Orbs */}
@@ -1585,6 +1596,12 @@ export default function Dashboard() {
             </div>
           )}
 
+          {!isSupabaseConfigured && (
+            <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-2xl mb-4 text-[11px] text-amber-800 font-medium leading-relaxed">
+              💡 <strong>Configurazione Cloud</strong>: Per sincronizzare online tra iPhone e PC, aggiungi le chiavi Supabase su Vercel. Nel frattempo puoi usare l'app liberamente in locale!
+            </div>
+          )}
+
           {/* Form */}
           <form onSubmit={handleAuthSubmit} className="space-y-3.5">
             <div>
@@ -1641,10 +1658,19 @@ export default function Dashboard() {
                 </>
               )}
             </button>
+
+            {/* Continua in Locale / Ospite */}
+            <button
+              type="button"
+              onClick={() => setIsGuestMode(true)}
+              className="w-full mt-2 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 active:scale-[0.98] text-slate-700 font-semibold text-xs rounded-2xl transition-all flex items-center justify-center gap-1.5"
+            >
+              <span>Continua in Locale (Senza Account)</span>
+            </button>
           </form>
 
           {/* Subtext info */}
-          <div className="mt-6 pt-5 border-t border-slate-100 text-center">
+          <div className="mt-5 pt-4 border-t border-slate-100 text-center">
             <p className="text-[11px] text-slate-400 leading-relaxed">
               I tuoi impegni, tragitti e segnaposti sincronizzati ovunque con crittografia cloud.
             </p>
@@ -1696,12 +1722,26 @@ export default function Dashboard() {
 
             {/* 2. UNIFIED APPLE PROFILE AVATAR BUTTON */}
             <button
-              onClick={() => setIsProfileMenuOpen(true)}
-              title={`Profilo: ${authUser?.email || "Account"}`}
-              className="w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center shadow-md relative hover:scale-105 active:scale-95 transition-all"
+              onClick={() => {
+                if (!authUser) {
+                  setIsGuestMode(false);
+                } else {
+                  setIsProfileMenuOpen(true);
+                }
+              }}
+              title={authUser ? `Profilo: ${authUser.email}` : "Accedi o Sincronizza Account"}
+              className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center shadow-md relative hover:scale-105 active:scale-95 transition-all ${
+                authUser ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-slate-800 text-white"
+              }`}
             >
-              <span>{(authUser?.email?.[0] || "U").toUpperCase()}</span>
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
+              {authUser ? (
+                <span>{(authUser.email?.[0] || "U").toUpperCase()}</span>
+              ) : (
+                <User className="w-4 h-4" />
+              )}
+              {authUser && (
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
+              )}
             </button>
           </div>
         </header>

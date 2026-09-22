@@ -5,7 +5,7 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  // Do not aggressively hijack windows to prevent iOS WebKit navigation crashes
 });
 
 self.addEventListener('message', (event) => {

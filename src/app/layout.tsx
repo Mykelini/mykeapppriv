@@ -37,11 +37,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="it"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <head>
-        <title>OnTime</title>
-        <link rel="icon" href="/logo.png" type="image/png" />
-        <link rel="apple-touch-icon" href="/logo.png" />
-      </head>
       <body className="min-h-full flex flex-col bg-[#F5F5F7] text-slate-900">{children}</body>
     </html>
   );
