@@ -11,7 +11,7 @@ import {
   Trash2, CheckCircle2, CheckCheck, Undo2, Calendar, Home, Edit3, 
   Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, 
   Settings, Volume2, Sliders, ShieldAlert, Sparkles, Share, PlusSquare, Smartphone,
-  User, LogIn, LogOut, ChevronLeft, ChevronRight, Lock, Mail, Zap, Bookmark
+  User, LogIn, LogOut, ChevronLeft, ChevronRight, Lock, Mail, Zap, Bookmark, RefreshCw
 } from "lucide-react";
 import Image from "next/image";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
@@ -76,18 +76,7 @@ const categoryStyles: Record<EventCategory, string> = {
   Personale: "border-amber-500 text-amber-700 bg-amber-500/10",
 };
 
-// Default fallback starting location (Quattromiglia / Rende)
-const DEFAULT_BASE_LOCATION: BaseLocation = {
-  coords: { lat: 39.3621, lon: 16.2251 },
-  name: "Quattromiglia, Rende",
-};
-
-const DEFAULT_SAVED_PLACES: SavedPlace[] = [
-  { id: "home", name: "Casa", icon: "🏠", address: "Quattromiglia, Rende", coords: { lat: 39.3621, lon: 16.2251 } },
-  { id: "unical", name: "Unical", icon: "🎓", address: "Università della Calabria, Rende", coords: { lat: 39.3621, lon: 16.2251 } },
-  { id: "sport", name: "Sport", icon: "⚽", address: "Centro Sportivo, Rende", coords: { lat: 39.3550, lon: 16.2300 } },
-  { id: "work", name: "Lavoro", icon: "💼", address: "Ufficio, Rende", coords: { lat: 39.3600, lon: 16.2200 } },
-];
+// No hardcoded locations allowed
 
 const getWeatherInfo = (code: number, temp: number): WeatherData => {
   const roundedTemp = Math.round(temp);
@@ -167,9 +156,9 @@ export default function Dashboard() {
 
   // Geolocation & Base Memory State
   const [locationMode, setLocationMode] = useState<"home" | "gps">("home");
-  const [homeLocation, setHomeLocation] = useState<BaseLocation>(DEFAULT_BASE_LOCATION);
-  const [currentLoc, setCurrentLoc] = useState<{ lat: number; lon: number } | null>(DEFAULT_BASE_LOCATION.coords);
-  const [currentCity, setCurrentCity] = useState<string>(DEFAULT_BASE_LOCATION.name);
+  const [homeLocation, setHomeLocation] = useState<BaseLocation | null>(null);
+  const [currentLoc, setCurrentLoc] = useState<{ lat: number; lon: number } | null>(null);
+  const [currentCity, setCurrentCity] = useState<string>("Rilevamento in corso...");
   const [isLocating, setIsLocating] = useState(false);
 
   // Settings & Travel Preferences State
@@ -182,7 +171,7 @@ export default function Dashboard() {
   const [isIosInstallModalOpen, setIsIosInstallModalOpen] = useState(false);
 
   // Bookmarks / Saved Places State
-  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>(DEFAULT_SAVED_PLACES);
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [selectedBookmarkId, setSelectedBookmarkId] = useState<string | null>(null);
 
   // New Bookmark Modal State
@@ -240,6 +229,20 @@ export default function Dashboard() {
 
   // Ref for GPS Watch ID
   const watchIdRef = useRef<number | null>(null);
+
+  // Modal Scroll Lock Effect
+  const isAnyModalOpen = isFabOpen || isSettingsOpen || isHistoryOpen || isLocationModalOpen || isBookmarkModalOpen || !!mapsTargetEvent || isAuthModalOpen || isIosInstallModalOpen;
+
+  useEffect(() => {
+    if (isAnyModalOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isAnyModalOpen]);
 
   // Web Audio Synthesizer Chime
   const playDepartureChime = () => {
@@ -308,8 +311,9 @@ export default function Dashboard() {
   const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
-    const lat = currentLoc?.lat || 39.3621;
-    const lon = currentLoc?.lon || 16.2251;
+    if (!currentLoc) return [];
+    const lat = currentLoc.lat;
+    const lon = currentLoc.lon;
     const activeMapboxToken = mapboxToken || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
     // 1. Primary Engine: Mapbox Geocoding Places API for POIs with proximity bias
@@ -437,48 +441,27 @@ export default function Dashboard() {
 
     try {
       // Load Master Events
+      // Load Master Events
       const storedMaster = localStorage.getItem("ontime_master_events");
       if (storedMaster) {
         setMasterEvents(JSON.parse(storedMaster));
       }
 
-      // Load Home Base Location
-      const storedHome = localStorage.getItem("ontime_home_location");
-      let activeHome = DEFAULT_BASE_LOCATION;
-      if (storedHome) {
-        activeHome = JSON.parse(storedHome);
-      } else {
-        localStorage.setItem("ontime_home_location", JSON.stringify(DEFAULT_BASE_LOCATION));
-      }
-      setHomeLocation(activeHome);
-
-      // Load Saved Places / Bookmarks
-      const storedPlaces = localStorage.getItem("ontime_saved_places") || localStorage.getItem("ontime_bookmarks");
-      if (storedPlaces) {
-        setSavedPlaces(JSON.parse(storedPlaces));
-      } else {
-        localStorage.setItem("ontime_saved_places", JSON.stringify(DEFAULT_SAVED_PLACES));
-      }
-
-      // Load Travel Preferences
-      const storedBuf = localStorage.getItem("ontime_default_buffer");
-      if (storedBuf) setDefaultSafetyBuffer(parseInt(storedBuf));
-
-      const storedMode = localStorage.getItem("ontime_default_transport") as TransportMode | null;
-      if (storedMode) setDefaultTransportMode(storedMode);
-
-      // Load Mapbox Token
+      // Load Mapbox Token (Still valid in local storage as it's an API key)
       const storedMapbox = localStorage.getItem("ontime_mapbox_token");
       if (storedMapbox) setMapboxToken(storedMapbox);
 
-      // Load Location Mode
-      const storedLocMode = localStorage.getItem("ontime_location_mode") as "home" | "gps" | null;
-      const initialMode = storedLocMode || "home";
-      setLocationMode(initialMode);
+      // 1. Force GPS as default on startup
+      setLocationMode("gps");
 
-      if (initialMode === "home") {
-        setCurrentLoc(activeHome.coords);
-        setCurrentCity(activeHome.name);
+      // Register Service Worker on Boot
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js", { scope: '/' })
+          .then((reg) => {
+            setSwRegistration(reg);
+            console.log("SW Registered successfully:", reg);
+          })
+          .catch((err) => console.error("SW Registration failed:", err));
       }
 
       // Check Notifications
@@ -536,69 +519,99 @@ export default function Dashboard() {
     return () => subscription.unsubscribe();
   }, [isMounted]);
 
-  // Sync Supabase Events on login
+  const fetchUserEvents = async () => {
+    if (!authUser || !supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from("events")
+        .select("*")
+        .eq("user_id", authUser.id)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.warn("Supabase load error:", error);
+        return;
+      }
+      if (data) {
+        const synced: MasterEvent[] = data.map((row: any) => ({
+          id: row.id,
+          title: row.title,
+          category: row.category as EventCategory,
+          date: row.event_date || row.date || format(new Date(), "yyyy-MM-dd"),
+          targetTime: row.target_time,
+          destinationName: row.destination_name || "",
+          destinationCoords: row.destination_coords,
+          bufferMinutes: row.buffer_minutes ?? 10,
+          checklist: Array.isArray(row.checklist) ? row.checklist : [],
+          status: row.status as EventStatus,
+          completedAt: row.completed_at || undefined,
+          travelTimeMins: row.travel_time_mins || 10,
+          transportMode: (row.transport_mode as TransportMode) || "driving",
+        }));
+        setMasterEvents(synced);
+      }
+    } catch (e) {
+      console.error("fetchUserEvents error:", e);
+    }
+  };
+
+  // Sync Supabase Events & Settings on login, plus Realtime Subscription
   useEffect(() => {
     if (!isMounted || !authUser || !supabase || !isSupabaseConfigured) return;
     const client = supabase;
 
-    const syncWithSupabase = async () => {
+    const syncSettings = async () => {
       try {
-        const { data, error } = await client
-          .from("events")
+        // Fetch User Settings & Bookmarks
+        const { data: settingsData, error: settingsError } = await client
+          .from("user_settings")
           .select("*")
           .eq("user_id", authUser.id)
-          .order("created_at", { ascending: true });
+          .single();
 
-        if (error) {
-          console.warn("Supabase load error:", error);
-          return;
+        if (!settingsError && settingsData) {
+          if (settingsData.home_address && settingsData.home_coords) {
+            setHomeLocation({ name: settingsData.home_address, coords: settingsData.home_coords });
+          }
+          if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
+          if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
         }
 
-        if (data && data.length > 0) {
-          const synced: MasterEvent[] = data.map((row: any) => ({
-            id: row.id,
-            title: row.title,
-            category: row.category as EventCategory,
-            date: row.event_date || row.date || format(new Date(), "yyyy-MM-dd"),
-            targetTime: row.target_time,
-            destinationName: row.destination_name || "",
-            destinationCoords: row.destination_coords,
-            bufferMinutes: row.buffer_minutes ?? 10,
-            checklist: Array.isArray(row.checklist) ? row.checklist : [],
-            status: row.status as EventStatus,
-            completedAt: row.completed_at || undefined,
-            travelTimeMins: row.travel_time_mins || 10,
-            transportMode: (row.transport_mode as TransportMode) || "driving",
+        // Fetch User Bookmarks
+        const { data: bookmarksData, error: bookmarksError } = await client
+          .from("user_bookmarks")
+          .select("*")
+          .eq("user_id", authUser.id);
+          
+        if (!bookmarksError && bookmarksData) {
+          const loadedBookmarks = bookmarksData.map(b => ({
+            id: b.id,
+            name: b.label,
+            icon: "📍",
+            address: b.address,
+            coords: b.coords
           }));
-          setMasterEvents(synced);
-        } else if (masterEvents.length > 0) {
-          // Push existing local events to Supabase cloud
-          for (const ev of masterEvents) {
-            await client.from("events").upsert({
-              id: ev.id,
-              user_id: authUser.id,
-              title: ev.title,
-              category: ev.category,
-              event_date: ev.date,
-              date: ev.date,
-              target_time: ev.targetTime,
-              destination_name: ev.destinationName,
-              destination_coords: ev.destinationCoords,
-              transport_mode: ev.transportMode || "driving",
-              buffer_minutes: ev.bufferMinutes,
-              checklist: ev.checklist,
-              status: ev.status,
-              completed_at: ev.completedAt || null,
-              travel_time_mins: ev.travelTimeMins || 10,
-            });
-          }
+          setSavedPlaces(loadedBookmarks);
         }
       } catch (err) {
-        console.error("Supabase sync error:", err);
+        console.error("Supabase sync settings error:", err);
       }
     };
 
-    syncWithSupabase();
+    fetchUserEvents();
+    syncSettings();
+
+    // Supabase Real-Time Subscription
+    const channel = client
+      .channel("realtime_events")
+      .on("postgres_changes", { event: "*", schema: "public", table: "events", filter: `user_id=eq.${authUser.id}` }, () => {
+        fetchUserEvents(); // Re-fetches immediately when changed on PC or phone
+      })
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
   }, [authUser, isMounted]);
 
   // Manage Departure Notification, SW PostMessage & Chime in Ticker
@@ -654,8 +667,12 @@ export default function Dashboard() {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
-      setCurrentLoc(homeLocation.coords);
-      setCurrentCity(homeLocation.name);
+      if (homeLocation) {
+        setCurrentLoc(homeLocation.coords);
+        setCurrentCity(homeLocation.name);
+      } else {
+        setCurrentCity("Nessuna Base Salvata");
+      }
       setIsLocating(false);
       return;
     }
@@ -663,18 +680,35 @@ export default function Dashboard() {
     if (locationMode === "gps") {
       setIsLocating(true);
 
+      const fallbackToIP = async () => {
+        try {
+          const res = await fetch('https://ipapi.co/json/');
+          const data = await res.json();
+          if (data.latitude && data.longitude) {
+            setCurrentLoc({ lat: data.latitude, lon: data.longitude });
+            setCurrentCity(data.city || "Posizione IP");
+          } else {
+            setCurrentCity("Posizione Sconosciuta");
+          }
+        } catch (e) {
+          console.error("IP Fallback failed", e);
+          setCurrentCity("Posizione Sconosciuta");
+        }
+        setIsLocating(false);
+      };
+
       if (!("geolocation" in navigator)) {
         alert("La geolocalizzazione GPS non è supportata da questo browser.");
-        switchToHomeMode(homeLocation);
+        fallbackToIP();
         return;
       }
 
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const acc = pos.coords.accuracy;
-          if (acc > 2000) {
-            console.warn(`GPS accuracy radius high (${acc}m). Falling back to home base.`);
-            switchToHomeMode(homeLocation);
+          if (acc > 5000) {
+            console.warn(`GPS accuracy radius high (${acc}m). Falling back to IP.`);
+            fallbackToIP();
             return;
           }
 
@@ -686,10 +720,10 @@ export default function Dashboard() {
           setIsLocating(false);
         },
         (err) => {
-          console.warn("GPS request failed. Falling back to saved base:", err);
-          switchToHomeMode(homeLocation);
+          console.warn("GPS request failed. Falling back to IP:", err);
+          fallbackToIP();
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
       );
 
       watchIdRef.current = navigator.geolocation.watchPosition(
@@ -704,7 +738,7 @@ export default function Dashboard() {
           }
         },
         (err) => console.warn("Watch position error:", err),
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
       );
 
       return () => {
@@ -871,9 +905,17 @@ export default function Dashboard() {
     localStorage.setItem("ontime_location_mode", "gps");
   };
 
+  const syncUserSetting = async (updates: any) => {
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        await supabase.from("user_settings").upsert({ user_id: authUser.id, ...updates });
+      } catch (e) { console.error("Sync settings error", e); }
+    }
+  };
+
   const saveNewHomeBase = (newBase: BaseLocation) => {
     setHomeLocation(newBase);
-    localStorage.setItem("ontime_home_location", JSON.stringify(newBase));
+    syncUserSetting({ home_address: newBase.name, home_coords: newBase.coords });
     switchToHomeMode(newBase);
     setIsEditingBase(false);
     setBaseSearchQuery("");
@@ -1011,7 +1053,7 @@ export default function Dashboard() {
     if (!coords) return alert("Indirizzo non valido o non trovato.");
 
     const newPlace: SavedPlace = {
-      id: Math.random().toString(),
+      id: "place_" + Date.now(),
       name: newBookmarkName.trim(),
       icon: newBookmarkIcon || "📍",
       address: addr,
@@ -1020,8 +1062,17 @@ export default function Dashboard() {
 
     const updated = [...savedPlaces, newPlace];
     setSavedPlaces(updated);
-    localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
-    localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
+    if (authUser && supabase) {
+      supabase.from("user_bookmarks").insert([{
+        id: newPlace.id,
+        user_id: authUser.id,
+        label: newPlace.name,
+        address: newPlace.address,
+        coords: newPlace.coords
+      }]).then(({ error }) => {
+        if (error) console.error("Error saving bookmark", error);
+      });
+    }
 
     setNewBookmarkName("");
     setNewBookmarkIcon("📍");
@@ -1030,35 +1081,39 @@ export default function Dashboard() {
     setIsBookmarkModalOpen(false);
   };
 
-  // Delete Bookmark
   const deleteBookmark = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (window.confirm("Eliminare questo segnaposto dai preferiti?")) {
       const updated = savedPlaces.filter((p) => p.id !== id);
       setSavedPlaces(updated);
-      localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
-      localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
+      if (authUser && supabase) {
+        supabase.from("user_bookmarks").delete().eq("id", id).eq("user_id", authUser.id).then();
+      }
       if (selectedBookmarkId === id) setSelectedBookmarkId(null);
     }
   };
 
   // One-Tap Save Selected Destination to Bookmarks / Segnaposti
-
-  const handleSaveSelectedDestToBookmarks = () => {
+  const oneTapSaveDestination = () => {
     if (!selectedDest) return;
-    const cleanName = selectedDest.name.split(",")[0].trim();
-    const icon = getPoiIcon(selectedDest.name);
     const newPlace: SavedPlace = {
-      id: "place_" + Date.now(),
-      name: cleanName,
-      icon,
+      id: crypto.randomUUID(),
+      name: selectedDest.name.split(",")[0], // Just the main name
+      icon: "📍",
       address: selectedDest.name,
       coords: { lat: selectedDest.lat, lon: selectedDest.lon },
     };
     const updated = [...savedPlaces, newPlace];
     setSavedPlaces(updated);
-    localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
-    localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
+    if (authUser && supabase) {
+      supabase.from("user_bookmarks").insert([{
+        id: newPlace.id,
+        user_id: authUser.id,
+        label: newPlace.name,
+        address: newPlace.address,
+        coords: newPlace.coords
+      }]).then();
+    }
     setSelectedBookmarkId(newPlace.id);
     setBookmarkSavedFeedback(true);
     setTimeout(() => setBookmarkSavedFeedback(false), 2500);
@@ -1163,59 +1218,52 @@ export default function Dashboard() {
     }
   };
 
-  // Lock-screen Notification 5-second Tester
-  const triggerLockScreenTest = () => {
-    if (testNotificationCountdown !== null) return;
-    setTestNotificationCountdown(5);
+  // Lock-screen Notification 5-second Tester via Service Worker
+  const triggerLockScreenTest = async () => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+      alert("Il tuo browser non supporta i Service Worker per le notifiche in background.");
+      return;
+    }
 
-    let remaining = 5;
-    const timer = setInterval(() => {
-      remaining -= 1;
-      if (remaining > 0) {
-        setTestNotificationCountdown(remaining);
-      } else {
-        clearInterval(timer);
-        setTestNotificationCountdown(null);
-
-        playDepartureChime();
-
-        if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-          try {
-            navigator.vibrate([300, 150, 300, 150, 300]);
-          } catch {}
-        }
-
-        const notifTitle = "🚗 OnTime: È ora di uscire!";
-        const notifBody = "Test riuscito! Le notifiche su blocco schermo funzionano perfettamente.";
-
-        if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-          navigator.serviceWorker.ready.then((reg) => {
-            reg.showNotification(notifTitle, {
-              body: notifBody,
-              icon: "/logo.png",
-              badge: "/logo.png",
-              vibrate: [300, 150, 300, 150, 300],
-              tag: "test-departure",
-              renotify: true,
-              requireInteraction: true,
-              data: { url: "/" },
-            } as any);
-          }).catch(() => {
-            if ("Notification" in window && Notification.permission === "granted") {
-              new Notification(notifTitle, {
-                body: notifBody,
-                icon: "/logo.png",
-              });
-            }
-          });
-        } else if ("Notification" in window && Notification.permission === "granted") {
-          new Notification(notifTitle, {
-            body: notifBody,
-            icon: "/logo.png",
-          });
-        }
+    let perm = Notification.permission;
+    if (perm !== "granted") {
+      perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        alert("Permesso per le notifiche negato!");
+        return;
       }
-    }, 1000);
+      setNotificationsEnabled(true);
+    }
+
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      
+      // 1. Instant test notification
+      reg.showNotification("🚗 OnTime: Test Ricezione", {
+        body: "Se vedi questo messaggio, le notifiche di sistema sono attive!",
+        icon: "/logo.png",
+        badge: "/logo.png",
+        vibrate: [300, 100, 300],
+        tag: "ontime-test-instant",
+        requireInteraction: true
+      } as any);
+
+      // 2. Schedule background test
+      if (reg.active) {
+        reg.active.postMessage({
+          type: 'SCHEDULE_LOCKSCREEN_TEST',
+          delay: 5000,
+          title: "🚗 OnTime: È ora di uscire!",
+          body: "Test blocco schermo riuscito! L'allarme funziona a schermo spento."
+        });
+        
+        // Show visual feedback (we use an alert or a custom toast state here, alert is easier but less pretty, let's use a temporary state if it existed or just alert/toast)
+        alert("Notifica inviata. Se premi il tasto di blocco, la seconda notifica arriverà tra 5 secondi!");
+      }
+    } catch (err) {
+      console.error("Lock screen test error:", err);
+      alert("Errore nell'avvio del test di notifica.");
+    }
   };
 
   // Supabase Auth Submit (Login / Register)
@@ -1275,8 +1323,20 @@ export default function Dashboard() {
     setAuthUser(null);
     setIsGuestMode(false);
     setMasterEvents([]);
+    setSavedPlaces([]);
+    setHomeLocation(null);
+    setDefaultSafetyBuffer(10);
+    setDefaultTransportMode("driving");
+    setLocationMode("gps");
+    
     if (typeof window !== "undefined") {
       localStorage.removeItem("ontime_master_events");
+      localStorage.removeItem("ontime_home_location");
+      localStorage.removeItem("ontime_saved_places");
+      localStorage.removeItem("ontime_bookmarks");
+      localStorage.removeItem("ontime_default_buffer");
+      localStorage.removeItem("ontime_default_transport");
+      localStorage.removeItem("ontime_location_mode");
     }
     setIsAuthModalOpen(false);
     setIsProfileMenuOpen(false);
@@ -1305,13 +1365,18 @@ export default function Dashboard() {
         } else if (currentLoc) {
           destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
         } else {
-          destCoords = DEFAULT_BASE_LOCATION.coords;
+          // If no fallback possible, reject
+          return alert("Indirizzo non trovato.");
         }
       }
     }
 
     if (!destCoords) {
-      destCoords = currentLoc || DEFAULT_BASE_LOCATION.coords;
+      if (currentLoc) {
+        destCoords = currentLoc;
+      } else {
+        return alert("Devi fornire una posizione GPS attiva o inserire un indirizzo valido.");
+      }
     }
 
     // Auto-calculate travel time
@@ -1339,15 +1404,7 @@ export default function Dashboard() {
         travelTimeMins: finalTravelTime,
       };
 
-      setMasterEvents((prev) =>
-        prev.map((e) =>
-          e.id === editingEventId
-            ? { ...e, ...updatedEventData }
-            : e
-        )
-      );
-
-      if (authUser && supabase && isSupabaseConfigured) {
+      if (authUser && supabase) {
         try {
           await supabase
             .from("events")
@@ -1369,10 +1426,17 @@ export default function Dashboard() {
         } catch (e) {
           console.warn("Supabase update error:", e);
         }
+      } else {
+        setMasterEvents((prev) =>
+          prev.map((e) =>
+            e.id === editingEventId
+              ? { ...e, ...updatedEventData }
+              : e
+          )
+        );
       }
     } else {
-      const newEv: MasterEvent = {
-        id: Math.random().toString(),
+      const newEvData = {
         title: newEventTitle.trim(),
         category: newEventCategory,
         date: newEventDate,
@@ -1381,34 +1445,37 @@ export default function Dashboard() {
         destinationCoords: destCoords,
         bufferMinutes: newEventBuffer,
         checklist: newEventChecklist,
-        status: "active",
+        status: "active" as EventStatus,
         travelTimeMins: finalTravelTime,
         transportMode: newEventTransportMode,
       };
 
-      setMasterEvents((prev) => [...prev, newEv]);
-
-      if (authUser && supabase && isSupabaseConfigured) {
+      if (authUser && supabase) {
         try {
-          await supabase.from("events").insert({
-            id: newEv.id,
+          await supabase.from("events").insert([{
             user_id: authUser.id,
-            title: newEv.title,
-            category: newEv.category,
-            date: newEv.date,
-            event_date: newEv.date,
-            target_time: newEv.targetTime,
-            destination_name: newEv.destinationName,
-            destination_coords: newEv.destinationCoords,
-            buffer_minutes: newEv.bufferMinutes,
-            checklist: newEv.checklist,
-            status: newEv.status,
-            transport_mode: newEv.transportMode,
-            travel_time_mins: newEv.travelTimeMins,
-          });
+            title: newEvData.title,
+            category: newEvData.category,
+            event_date: newEvData.date,
+            date: newEvData.date, // support old schema if any
+            target_time: newEvData.targetTime,
+            destination_name: newEvData.destinationName,
+            destination_coords: newEvData.destinationCoords,
+            buffer_minutes: newEvData.bufferMinutes,
+            checklist: newEvData.checklist,
+            status: newEvData.status,
+            travel_time_mins: newEvData.travelTimeMins,
+            transport_mode: newEvData.transportMode,
+          }]);
         } catch (e) {
           console.warn("Supabase insert error:", e);
         }
+      } else {
+        const newEv: MasterEvent = {
+          id: Math.random().toString(),
+          ...newEvData,
+        };
+        setMasterEvents((prev) => [...prev, newEv]);
       }
     }
 
@@ -1440,11 +1507,11 @@ export default function Dashboard() {
     if (window.confirm("⚠️ Vuoi davvero cancellare TUTTI i dati dell'app (eventi, segnaposti e impostazioni)? L'azione è irreversibile.")) {
       localStorage.clear();
       setMasterEvents([]);
-      setSavedPlaces(DEFAULT_SAVED_PLACES);
-      setHomeLocation(DEFAULT_BASE_LOCATION);
-      setLocationMode("home");
-      setCurrentLoc(DEFAULT_BASE_LOCATION.coords);
-      setCurrentCity(DEFAULT_BASE_LOCATION.name);
+      setSavedPlaces([]);
+      setHomeLocation(null);
+      setLocationMode("gps");
+      setCurrentLoc(null);
+      setCurrentCity("Rilevamento in corso...");
       setIsSettingsOpen(false);
       alert("Tutti i dati dell'applicazione sono stati cancellati.");
     }
@@ -1714,6 +1781,16 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            {authUser && (
+              <button
+                onClick={() => fetchUserEvents()}
+                className="w-9 h-9 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-100 transition-colors"
+                title="Sincronizza Cloud"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            )}
+            
             {/* 1. TOP-RIGHT SMART LOCATION PILL */}
             <button
               onClick={() => {
@@ -2373,7 +2450,7 @@ export default function Dashboard() {
                         key={mins}
                         onClick={() => {
                           setDefaultSafetyBuffer(mins);
-                          localStorage.setItem("ontime_default_buffer", mins.toString());
+                          syncUserSetting({ default_buffer: mins });
                         }}
                         className={`flex-1 py-2 rounded-[12px] text-xs font-bold transition-all border ${
                           defaultSafetyBuffer === mins
@@ -2393,7 +2470,7 @@ export default function Dashboard() {
                     <button
                       onClick={() => {
                         setDefaultTransportMode("driving");
-                        localStorage.setItem("ontime_default_transport", "driving");
+                        syncUserSetting({ default_transport: "driving" });
                       }}
                       className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
                         defaultTransportMode === "driving"
@@ -2406,7 +2483,7 @@ export default function Dashboard() {
                     <button
                       onClick={() => {
                         setDefaultTransportMode("walking");
-                        localStorage.setItem("ontime_default_transport", "walking");
+                        syncUserSetting({ default_transport: "walking" });
                       }}
                       className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
                         defaultTransportMode === "walking"
@@ -2419,7 +2496,7 @@ export default function Dashboard() {
                     <button
                       onClick={() => {
                         setDefaultTransportMode("cycling");
-                        localStorage.setItem("ontime_default_transport", "cycling");
+                        syncUserSetting({ default_transport: "cycling" });
                       }}
                       className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
                         defaultTransportMode === "cycling"
@@ -2637,35 +2714,33 @@ export default function Dashboard() {
 
                 <button
                   onClick={() => {
-                    switchToHomeMode(homeLocation);
+                    if (homeLocation) switchToHomeMode(homeLocation);
                     setIsLocationModalOpen(false);
                   }}
+                  disabled={!homeLocation}
                   className={`w-full p-4 rounded-[20px] border text-left flex items-center justify-between transition-all ${
+                    !homeLocation ? "opacity-50 cursor-not-allowed border-slate-200 bg-slate-50" :
                     locationMode === "home"
-                      ? "bg-slate-900 text-white border-slate-900 shadow-md"
-                      : "bg-slate-50 border-slate-200/80 hover:bg-slate-100"
+                      ? "bg-slate-900 border-slate-900 shadow-md shadow-slate-900/20"
+                      : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
                   }`}
                 >
-                  <div className="flex items-center gap-3.5 min-w-0 pr-2">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm ${
-                      locationMode === "home" ? "bg-slate-800 text-white" : "bg-slate-200 text-slate-700"
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                      locationMode === "home" ? "bg-slate-800 text-white" : "bg-blue-50 text-blue-600"
                     }`}>
                       <Home className="w-5 h-5" />
                     </div>
                     <div className="min-w-0">
-                      <h4 className={`text-[15px] font-bold ${locationMode === "home" ? "text-white" : "text-slate-900"}`}>
+                      <h4 className={`text-sm font-bold truncate ${locationMode === "home" ? "text-white" : "text-slate-900"}`}>
                         Base Salvata
                       </h4>
                       <p className={`text-xs font-medium truncate mt-0.5 ${locationMode === "home" ? "text-slate-300" : "text-slate-500"}`}>
-                        {homeLocation.name}
+                        {homeLocation ? homeLocation.name : "Nessuna Base configurata"}
                       </p>
                     </div>
                   </div>
-                  {locationMode === "home" && (
-                    <div className="w-6 h-6 rounded-full bg-white text-slate-900 flex items-center justify-center shrink-0">
-                      <Check className="w-4 h-4 stroke-[3]" />
-                    </div>
-                  )}
+                  {locationMode === "home" && <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
                 </button>
 
                 <button
@@ -2898,10 +2973,13 @@ export default function Dashboard() {
 
       {/* NEW / EDIT EVENT MODAL SHEET */}
       {isFabOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl animate-in slide-in-from-bottom-full duration-300 max-h-[88vh] overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden relative">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-[20px] font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4 touch-none overscroll-none animate-in fade-in duration-300">
+          <div 
+            className="w-full max-w-lg bg-white rounded-t-[28px] sm:rounded-[24px] max-h-[85dvh] flex flex-col shadow-2xl touch-auto overscroll-contain overflow-hidden animate-in slide-in-from-bottom-full duration-300"
+          >
+            {/* HEADER */}
+            <div className="shrink-0 p-4 border-b border-gray-100 flex justify-between items-center bg-white">
+              <h2 className="text-[20px] font-bold text-slate-900 ml-2">
                 {editingEventId ? "Modifica Impegno" : "Nuovo Impegno"}
               </h2>
               <button
@@ -2914,8 +2992,10 @@ export default function Dashboard() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-
-            <div className="flex flex-col gap-4">
+            
+            {/* BODY */}
+            <div className="flex-1 overflow-y-auto overscroll-y-contain px-5 py-3 space-y-4 touch-pan-y overflow-x-hidden w-full max-w-full">
+              <div className="flex flex-col gap-4">
               {/* Title */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">
@@ -3079,7 +3159,7 @@ export default function Dashboard() {
                       return (
                         <button
                           type="button"
-                          onClick={handleSaveSelectedDestToBookmarks}
+                          onClick={oneTapSaveDestination}
                           className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors border border-amber-200 shadow-xs"
                         >
                           <Bookmark className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
@@ -3151,7 +3231,8 @@ export default function Dashboard() {
                       type="button"
                       className="w-full text-left px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border-t border-slate-100 transition-colors flex items-center gap-2 text-slate-600 font-semibold text-xs"
                       onClick={() => {
-                        const coords = currentLoc || DEFAULT_BASE_LOCATION.coords;
+                        if (!currentLoc) return alert("Posizione GPS assente");
+                        const coords = currentLoc;
                         setSelectedDest({ lat: coords.lat, lon: coords.lon, name: addressQuery });
                         setAddressSuggestions([]);
                       }}
@@ -3301,8 +3382,10 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-
-            <div className="mt-6 mb-2">
+            </div>
+            
+            {/* FOOTER */}
+            <div className="shrink-0 p-4 border-t border-gray-100 bg-white">
               <button
                 onClick={handleSaveEvent}
                 disabled={isSaving}

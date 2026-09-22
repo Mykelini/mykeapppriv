@@ -23,6 +23,21 @@ self.addEventListener('message', (event) => {
       data: { url: '/' }
     });
   }
+  
+  if (event.data && event.data.type === 'SCHEDULE_LOCKSCREEN_TEST') {
+    const { delay, title, body } = event.data;
+    setTimeout(() => {
+      self.registration.showNotification(title, {
+        body: body,
+        icon: '/logo.png',
+        badge: '/logo.png',
+        vibrate: [400, 150, 400, 150, 400],
+        tag: 'lockscreen-test',
+        renotify: true,
+        requireInteraction: true
+      });
+    }, delay || 5000);
+  }
 });
 
 self.addEventListener('notificationclick', (event) => {
