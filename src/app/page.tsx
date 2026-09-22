@@ -485,6 +485,18 @@ export default function Dashboard() {
       if ("Notification" in window && Notification.permission === "granted") {
         setNotificationsEnabled(true);
       }
+
+      // Check URL hash for Supabase auth errors (e.g. expired confirmation links)
+      if (typeof window !== "undefined" && window.location.hash.includes("error_description")) {
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const errDesc = hashParams.get("error_description");
+        if (errDesc) {
+          setAuthMessage({
+            type: "error",
+            text: errDesc.replace(/\+/g, " "),
+          });
+        }
+      }
     } catch (e) {
       console.error("Failed to read local storage", e);
     }
@@ -1234,6 +1246,9 @@ export default function Dashboard() {
         const { data, error } = await supabase.auth.signUp({
           email: authEmail.trim(),
           password: authPassword,
+          options: {
+            emailRedirectTo: typeof window !== "undefined" ? `${window.location.origin}` : undefined,
+          },
         });
         if (error) throw error;
         if (data.session?.user) {
