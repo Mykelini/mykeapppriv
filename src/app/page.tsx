@@ -11,7 +11,7 @@ import {
   Trash2, CheckCircle2, CheckCheck, Undo2, Calendar, Home, Edit3, 
   Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, 
   Settings, Volume2, Sliders, ShieldAlert, Sparkles, Share, PlusSquare, Smartphone,
-  User, LogIn, LogOut, ChevronLeft, ChevronRight, Lock, Mail, Zap
+  User, LogIn, LogOut, ChevronLeft, ChevronRight, Lock, Mail, Zap, Bookmark
 } from "lucide-react";
 import Image from "next/image";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
@@ -44,6 +44,8 @@ type LocationSuggestion = {
   fullName: string;
   lat: number;
   lon: number;
+  icon?: string;
+  category?: string;
 };
 
 type BaseLocation = {
@@ -276,14 +278,64 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Dual Geocode Search (Photon + Nominatim with countrycodes=it)
+  // Helper to extract relevant POI icon based on venue name or categories
+  const getPoiIcon = (name: string, category?: string, placeType?: string[]): string => {
+    const lower = `${name} ${category || ""}`.toLowerCase();
+    if (lower.includes("ristorante") || lower.includes("pizzeria") || lower.includes("trattoria") || lower.includes("sushi") || lower.includes("food") || lower.includes("osteria") || lower.includes("cucina") || lower.includes("tavern")) return "🍽️";
+    if (lower.includes("bar") || lower.includes("café") || lower.includes("cafe") || lower.includes("pub") || lower.includes("bistrot") || lower.includes("pasticceria") || lower.includes("gelateria") || lower.includes("cocktail")) return "☕";
+    if (lower.includes("padel") || lower.includes("calcetto") || lower.includes("calcio") || lower.includes("palestra") || lower.includes("sport") || lower.includes("tennis") || lower.includes("fitness") || lower.includes("gym") || lower.includes("piscina") || lower.includes("campo") || lower.includes("stadio")) return "⚽";
+    if (lower.includes("supermercato") || lower.includes("market") || lower.includes("negozio") || lower.includes("store") || lower.includes("shop") || lower.includes("outlet") || lower.includes("centro commerciale")) return "🛍️";
+    if (lower.includes("farmacia") || lower.includes("ospedale") || lower.includes("clinica") || lower.includes("studio medico") || lower.includes("dentista") || lower.includes("dottore") || lower.includes("asl")) return "💊";
+    if (lower.includes("unical") || lower.includes("università") || lower.includes("universita") || lower.includes("scuola") || lower.includes("liceo") || lower.includes("campus") || lower.includes("aula") || lower.includes("cubo")) return "🎓";
+    if (lower.includes("hotel") || lower.includes("b&b") || lower.includes("residence") || lower.includes("albergo") || lower.includes("agriturismo")) return "🏨";
+    if (lower.includes("stazione") || lower.includes("ferrovia") || lower.includes("treno") || lower.includes("aeroporto") || lower.includes("terminal")) return "🚉";
+    if (lower.includes("parco") || lower.includes("villa") || lower.includes("giardino")) return "🌳";
+    if (placeType?.includes("poi")) return "🏢";
+    return "📍";
+  };
+
+  // Upgraded POI & Address Search Engine (Mapbox Places POI + Photon/Nominatim Fallback)
   const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
     const lat = currentLoc?.lat || 39.3621;
     const lon = currentLoc?.lon || 16.2251;
+    const activeMapboxToken = mapboxToken || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
-    // 1. Try Photon API with Proximity Biasing
+    // 1. Primary Engine: Mapbox Geocoding Places API for POIs with proximity bias
+    if (activeMapboxToken) {
+      try {
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,neighborhood&language=it&limit=6`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.features && data.features.length > 0) {
+            return data.features.map((f: any) => {
+              const mainName = f.text || f.place_name.split(",")[0];
+              const cleanFullName = (f.place_name || "").replace(/,\s*(Italia|Italy)$/i, "");
+              const parts = cleanFullName.split(",");
+              const secondary = parts.length > 1 ? parts.slice(1).join(",").trim() : "";
+              const category = f.properties?.category || (f.place_type && f.place_type[0]) || "";
+              const icon = getPoiIcon(mainName, category, f.place_type);
+
+              return {
+                name: mainName,
+                secondary,
+                fullName: cleanFullName,
+                lat: f.center[1],
+                lon: f.center[0],
+                icon,
+                category,
+              };
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("Mapbox Places POI search error, falling back to Photon:", err);
+      }
+    }
+
+    // 2. Smart Fallback POI Engine: Photon API with Proximity Biasing & POI tagging
     try {
       const res = await fetch(
         `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lon}&limit=8&lang=it`
@@ -300,12 +352,17 @@ export default function Dashboard() {
             props.state
           ].filter(Boolean).join(", ");
 
+          const category = `${props.osm_key || ""} ${props.osm_value || ""}`;
+          const icon = getPoiIcon(mainName, category);
+
           return {
             name: mainName,
             secondary,
             fullName: secondary ? `${mainName}, ${secondary}` : mainName,
             lat: f.geometry.coordinates[1],
             lon: f.geometry.coordinates[0],
+            icon,
+            category,
           };
         });
       }
@@ -313,7 +370,7 @@ export default function Dashboard() {
       console.warn("Photon autocomplete failed, trying local fallback", e);
     }
 
-    // 2. Nominatim API with countrycodes=it
+    // 3. Last Fallback: Nominatim API with countrycodes=it & addressdetails
     try {
       const viewbox = `${lon - 0.25},${lat - 0.25},${lon + 0.25},${lat + 0.25}`;
       const res = await fetch(
@@ -325,12 +382,14 @@ export default function Dashboard() {
           const addr = item.address || {};
           const mainName = addr.amenity || addr.building || addr.road || item.display_name.split(",")[0];
           const secondary = [addr.road, addr.suburb, addr.city || addr.town || addr.village, addr.state].filter(Boolean).join(", ");
+          const icon = getPoiIcon(mainName, addr.amenity);
           return {
             name: mainName,
             secondary,
             fullName: item.display_name,
             lat: parseFloat(item.lat),
             lon: parseFloat(item.lon),
+            icon,
           };
         });
       }
@@ -946,6 +1005,29 @@ export default function Dashboard() {
     }
   };
 
+  // One-Tap Save Selected Destination to Bookmarks / Segnaposti
+  const [bookmarkSavedFeedback, setBookmarkSavedFeedback] = useState(false);
+
+  const handleSaveSelectedDestToBookmarks = () => {
+    if (!selectedDest) return;
+    const cleanName = selectedDest.name.split(",")[0].trim();
+    const icon = getPoiIcon(selectedDest.name);
+    const newPlace: SavedPlace = {
+      id: "place_" + Date.now(),
+      name: cleanName,
+      icon,
+      address: selectedDest.name,
+      coords: { lat: selectedDest.lat, lon: selectedDest.lon },
+    };
+    const updated = [...savedPlaces, newPlace];
+    setSavedPlaces(updated);
+    localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
+    localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
+    setSelectedBookmarkId(newPlace.id);
+    setBookmarkSavedFeedback(true);
+    setTimeout(() => setBookmarkSavedFeedback(false), 2500);
+  };
+
   // Start Editing Event
   const startEditingEvent = (ev: MasterEvent) => {
     setEditingEventId(ev.id);
@@ -1165,21 +1247,26 @@ export default function Dashboard() {
     let destCoords = selectedDest ? { lat: selectedDest.lat, lon: selectedDest.lon } : null;
     let destName = selectedDest ? selectedDest.name : addressQuery.trim();
 
-    // Auto-Geocode typed address if no dropdown item was selected
+    // Auto-Geocode typed address or POI venue if no dropdown item was explicitly clicked
     if (!destCoords && destName.length > 0) {
-      const geoResults = await fetchSuggestions(destName);
-      if (geoResults.length > 0) {
-        destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
-        destName = geoResults[0].fullName;
-      } else if (currentLoc) {
-        destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
+      if (addressSuggestions.length > 0) {
+        destCoords = { lat: addressSuggestions[0].lat, lon: addressSuggestions[0].lon };
+        destName = addressSuggestions[0].fullName;
+      } else {
+        const geoResults = await fetchSuggestions(destName);
+        if (geoResults.length > 0) {
+          destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
+          destName = geoResults[0].fullName;
+        } else if (currentLoc) {
+          destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
+        } else {
+          destCoords = DEFAULT_BASE_LOCATION.coords;
+        }
       }
     }
 
     if (!destCoords) {
-      alert("Seleziona una destinazione valida dalla lista o inserisci un indirizzo riconoscibile.");
-      setIsSaving(false);
-      return;
+      destCoords = currentLoc || DEFAULT_BASE_LOCATION.coords;
     }
 
     let finalTravelTime = 10;
@@ -2757,6 +2844,17 @@ export default function Dashboard() {
                   <input
                     type="text"
                     value={addressQuery}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (addressSuggestions.length > 0) {
+                          const top = addressSuggestions[0];
+                          setAddressQuery(top.fullName);
+                          setSelectedDest({ lat: top.lat, lon: top.lon, name: top.fullName });
+                          setAddressSuggestions([]);
+                        }
+                      }
+                    }}
                     onChange={(e) => {
                       setAddressQuery(e.target.value);
                       if (selectedDest && e.target.value !== selectedDest.name) {
@@ -2764,44 +2862,111 @@ export default function Dashboard() {
                         setSelectedBookmarkId(null);
                       }
                     }}
-                    placeholder="Cerca via, locale o città"
+                    placeholder="Cerca locale, palestra, ristorante o via"
                     className="w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] pl-10 pr-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all placeholder:text-slate-400 text-sm"
                   />
                   {isSearchingAddress && <Loader2 className="w-4 h-4 animate-spin text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />}
                 </div>
 
-                {/* Suggestions Dropdown (Photon + Nominatim + Manual Fallback) */}
+                {/* ONE-TAP SAVE TO BOOKMARKS / SEGNAPOSTI */}
+                {selectedDest && (
+                  <div className="mt-2 flex items-center gap-2">
+                    {(() => {
+                      const isSaved = savedPlaces.some(
+                        (p) =>
+                          p.name.toLowerCase() === selectedDest.name.split(",")[0].toLowerCase() ||
+                          (Math.abs(p.coords.lat - selectedDest.lat) < 0.0005 &&
+                            Math.abs(p.coords.lon - selectedDest.lon) < 0.0005)
+                      );
+                      if (isSaved) {
+                        return (
+                          <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200/80 flex items-center gap-1.5">
+                            <Check className="w-3 h-3 text-emerald-600" /> Salvato nei tuoi Segnaposti
+                          </span>
+                        );
+                      }
+                      return (
+                        <button
+                          type="button"
+                          onClick={handleSaveSelectedDestToBookmarks}
+                          className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors border border-amber-200 shadow-xs"
+                        >
+                          <Bookmark className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+                          <span>
+                            {bookmarkSavedFeedback
+                              ? "Aggiunto ai Segnaposti! ✓"
+                              : `Salva "${selectedDest.name.split(",")[0]}" tra i Segnaposti`}
+                          </span>
+                        </button>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* Suggestions Dropdown (Mapbox Places POI + Photon + Google Maps Bridge) */}
                 {addressQuery.trim().length >= 2 && (addressSuggestions.length > 0 || !selectedDest) && (
-                  <div className="absolute top-full left-0 right-0 z-[999] bg-white rounded-xl shadow-2xl border border-gray-100 max-h-56 overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden mt-1">
+                  <div className="absolute top-full left-0 right-0 z-[999] bg-white rounded-xl shadow-2xl border border-gray-100 max-h-64 overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden mt-1">
                     {addressSuggestions.map((s, i) => (
                       <button
                         key={i}
-                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-2.5"
+                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-3"
                         onClick={() => {
                           setAddressQuery(s.fullName);
                           setSelectedDest({ lat: s.lat, lon: s.lon, name: s.fullName });
                           setAddressSuggestions([]);
                         }}
                       >
-                        <MapPin className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                        <span className="text-base shrink-0 mt-0.5">{s.icon || "📍"}</span>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-bold text-slate-900 truncate">{s.name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-slate-900 truncate">{s.name}</p>
+                            {s.category && (
+                              <span className="text-[9px] font-semibold text-slate-400 capitalize px-1.5 py-0.2 bg-slate-100 rounded shrink-0">
+                                {s.category}
+                              </span>
+                            )}
+                          </div>
                           {s.secondary && <p className="text-[11px] text-slate-400 truncate mt-0.5">{s.secondary}</p>}
                         </div>
                       </button>
                     ))}
 
-                    {/* MANUAL FALLBACK OPTION FOR UNINDEXED STREETS */}
+                    {/* INSTANT GOOGLE MAPS QUERY BRIDGE */}
                     <button
-                      className="w-full text-left px-4 py-3 bg-slate-50 hover:bg-blue-50 border-t border-slate-100 transition-colors flex items-center gap-2.5 text-blue-600 font-semibold text-xs"
+                      type="button"
+                      className="w-full text-left px-4 py-2.5 bg-blue-50/60 hover:bg-blue-100/60 border-t border-slate-100 transition-colors flex items-center justify-between text-xs text-blue-700"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        window.open(
+                          `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressQuery)}`,
+                          "_blank"
+                        );
+                      }}
+                    >
+                      <span className="flex items-center gap-2 font-medium truncate pr-2">
+                        <ExternalLink className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                        <span className="truncate">
+                          Cerca <strong>"{addressQuery}"</strong> su Google Maps
+                        </span>
+                      </span>
+                      <span className="text-[10px] text-blue-600 font-bold uppercase tracking-wider shrink-0">
+                        Verifica ↗
+                      </span>
+                    </button>
+
+                    {/* MANUAL FALLBACK OPTION */}
+                    <button
+                      type="button"
+                      className="w-full text-left px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border-t border-slate-100 transition-colors flex items-center gap-2 text-slate-600 font-semibold text-xs"
                       onClick={() => {
                         const coords = currentLoc || DEFAULT_BASE_LOCATION.coords;
                         setSelectedDest({ lat: coords.lat, lon: coords.lon, name: addressQuery });
                         setAddressSuggestions([]);
                       }}
                     >
-                      <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
-                      <span className="truncate">📍 Usa indirizzo digitato: "{addressQuery}"</span>
+                      <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span className="truncate">Usa testo digitato: "{addressQuery}"</span>
                     </button>
                   </div>
                 )}
