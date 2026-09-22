@@ -270,9 +270,14 @@ export default function Dashboard() {
     }
   };
 
-  // Register Service Worker on mount
+  // Register Service Worker only if notifications were granted
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
+    if (
+      typeof window !== "undefined" &&
+      "serviceWorker" in navigator &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+    ) {
       navigator.serviceWorker
         .register("/sw.js")
         .then((reg) => {
