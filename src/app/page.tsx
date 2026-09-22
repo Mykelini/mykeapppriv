@@ -1404,9 +1404,18 @@ export default function Dashboard() {
         travelTimeMins: finalTravelTime,
       };
 
+      // 1. Optimistic UI update
+      setMasterEvents((prev) =>
+        prev.map((e) =>
+          e.id === editingEventId
+            ? { ...e, ...updatedEventData }
+            : e
+        )
+      );
+
       if (authUser && supabase) {
         try {
-          await supabase
+          const { error } = await supabase
             .from("events")
             .update({
               title: updatedEventData.title,
@@ -1423,17 +1432,14 @@ export default function Dashboard() {
             })
             .eq("id", editingEventId)
             .eq("user_id", authUser.id);
+            
+          if (error) {
+            console.error("Supabase update error:", error);
+            // Fallback is already local state!
+          }
         } catch (e) {
           console.warn("Supabase update error:", e);
         }
-      } else {
-        setMasterEvents((prev) =>
-          prev.map((e) =>
-            e.id === editingEventId
-              ? { ...e, ...updatedEventData }
-              : e
-          )
-        );
       }
     } else {
       const newEvData = {
@@ -1450,9 +1456,16 @@ export default function Dashboard() {
         transportMode: newEventTransportMode,
       };
 
+      const newId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString();
+      const newEv: MasterEvent = { id: newId, ...newEvData };
+
+      // 1. Optimistic UI update
+      setMasterEvents((prev) => [...prev, newEv]);
+
       if (authUser && supabase) {
         try {
-          await supabase.from("events").insert([{
+          const { error } = await supabase.from("events").insert([{
+            id: newId,
             user_id: authUser.id,
             title: newEvData.title,
             category: newEvData.category,
@@ -1467,16 +1480,26 @@ export default function Dashboard() {
             travel_time_mins: newEvData.travelTimeMins,
             transport_mode: newEvData.transportMode,
           }]);
+          if (error) {
+             console.error("Supabase insert error:", error);
+             // The optimistic UI remains intact.
+          }
         } catch (e) {
           console.warn("Supabase insert error:", e);
         }
-      } else {
-        const newEv: MasterEvent = {
-          id: Math.random().toString(),
-          ...newEvData,
-        };
-        setMasterEvents((prev) => [...prev, newEv]);
       }
+    }
+
+    // 3. Auto-select date tab based on the new event's date
+    const todayStr = format(now, "yyyy-MM-dd");
+    const tomorrowStr = format(addDays(now, 1), "yyyy-MM-dd");
+    
+    if (newEventDate === todayStr) {
+      setDateTab("oggi");
+    } else if (newEventDate === tomorrowStr) {
+      setDateTab("domani");
+    } else {
+      setDateTab("tutti");
     }
 
     setEditingEventId(null);
