@@ -145,6 +145,8 @@ export default function Dashboard() {
 
   // Supabase Auth & Cloud Sync State
   const [authUser, setAuthUser] = useState<any>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -485,14 +487,22 @@ export default function Dashboard() {
 
   // Supabase Auth Session Listener
   useEffect(() => {
-    if (!isMounted || !isSupabaseConfigured || !supabase) return;
+    if (!isMounted) return;
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthChecking(false);
+      return;
+    }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setAuthUser(session?.user ?? null);
+      setAuthChecking(false);
+    }).catch(() => {
+      setAuthChecking(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setAuthUser(session?.user ?? null);
+      setAuthChecking(false);
     });
 
     return () => subscription.unsubscribe();
@@ -521,11 +531,11 @@ export default function Dashboard() {
             id: row.id,
             title: row.title,
             category: row.category as EventCategory,
-            date: row.date,
+            date: row.event_date || row.date || format(new Date(), "yyyy-MM-dd"),
             targetTime: row.target_time,
-            destinationName: row.destination_name,
+            destinationName: row.destination_name || "",
             destinationCoords: row.destination_coords,
-            bufferMinutes: row.buffer_minutes,
+            bufferMinutes: row.buffer_minutes ?? 10,
             checklist: Array.isArray(row.checklist) ? row.checklist : [],
             status: row.status as EventStatus,
             completedAt: row.completed_at || undefined,
@@ -534,13 +544,14 @@ export default function Dashboard() {
           }));
           setMasterEvents(synced);
         } else if (masterEvents.length > 0) {
-          // Push existing local guest events to Supabase cloud
+          // Push existing local events to Supabase cloud
           for (const ev of masterEvents) {
             await client.from("events").upsert({
               id: ev.id,
               user_id: authUser.id,
               title: ev.title,
               category: ev.category,
+              event_date: ev.date,
               date: ev.date,
               target_time: ev.targetTime,
               destination_name: ev.destinationName,
@@ -1234,7 +1245,12 @@ export default function Dashboard() {
       await supabase.auth.signOut();
     }
     setAuthUser(null);
+    setMasterEvents([]);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("ontime_master_events");
+    }
     setIsAuthModalOpen(false);
+    setIsProfileMenuOpen(false);
   };
 
   const handleSaveEvent = async () => {
@@ -1269,9 +1285,15 @@ export default function Dashboard() {
       destCoords = currentLoc || DEFAULT_BASE_LOCATION.coords;
     }
 
+    // Auto-calculate travel time
     let finalTravelTime = 10;
     if (currentLoc && destCoords) {
-      finalTravelTime = await fetchOsrmRouteMins(currentLoc, destCoords, newEventTransportMode, mapboxToken);
+      finalTravelTime = await fetchOsrmRouteMins(
+        currentLoc,
+        destCoords,
+        newEventTransportMode,
+        mapboxToken
+      );
     }
 
     if (editingEventId) {
@@ -1304,6 +1326,7 @@ export default function Dashboard() {
               title: updatedEventData.title,
               category: updatedEventData.category,
               date: updatedEventData.date,
+              event_date: updatedEventData.date,
               target_time: updatedEventData.targetTime,
               destination_name: updatedEventData.destinationName,
               destination_coords: updatedEventData.destinationCoords,
@@ -1344,6 +1367,7 @@ export default function Dashboard() {
             title: newEv.title,
             category: newEv.category,
             date: newEv.date,
+            event_date: newEv.date,
             target_time: newEv.targetTime,
             destination_name: newEv.destinationName,
             destination_coords: newEv.destinationCoords,
@@ -1474,80 +1498,179 @@ export default function Dashboard() {
     return city.split(",")[0].trim();
   };
 
+  // Loading Gate (Active Session Checking)
+  if (!isMounted || authChecking) {
+    return (
+      <main className="flex flex-col min-h-screen bg-[#F5F5F7] items-center justify-center p-6 font-sans">
+        <div className="flex flex-col items-center max-w-sm text-center">
+          <div className="relative w-20 h-20 rounded-3xl overflow-hidden shadow-xl mb-5 ring-4 ring-white/60 animate-pulse">
+            <Image src="/logo.png" alt="OnTime" fill className="object-cover" priority />
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <Navigation2 className="w-5 h-5 text-blue-600 fill-blue-600 animate-spin" />
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">OnTime</h1>
+          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Caricamento account...</p>
+        </div>
+      </main>
+    );
+  }
+
+  // Apple Authentication Gate (Locked App until user signs in/up)
+  if (!authUser) {
+    return (
+      <main className="flex flex-col min-h-screen bg-[#F5F5F7] items-center justify-center p-6 relative overflow-hidden font-sans">
+        {/* Ambient Glow Orbs */}
+        <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-200/40 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-indigo-200/30 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="max-w-sm w-full bg-white/80 backdrop-blur-xl border border-white/60 shadow-[0_20px_50px_rgba(0,0,0,0.06)] rounded-[32px] p-7 sm:p-8 flex flex-col relative z-10 animate-in fade-in zoom-in-95 duration-300">
+          {/* Logo & Header */}
+          <div className="flex flex-col items-center text-center mb-6">
+            <div className="relative w-16 h-16 rounded-[22px] overflow-hidden shadow-lg mb-3 ring-4 ring-white/80">
+              <Image src="/logo.png" alt="OnTime Logo" fill className="object-cover" priority />
+            </div>
+            <div className="flex items-center gap-1.5 mb-1">
+              <Navigation2 className="w-4 h-4 text-blue-600 fill-blue-600" />
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">OnTime</h1>
+            </div>
+            <p className="text-xs font-medium text-slate-500">
+              Organizza la tua giornata senza ansia.
+            </p>
+          </div>
+
+          {/* Segmented Control [Accedi] [Crea Account] */}
+          <div className="flex bg-slate-100/90 p-1 rounded-2xl mb-5 border border-slate-200/50">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("login");
+                setAuthMessage(null);
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all duration-200 ${
+                authMode === "login"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Accedi
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthMessage(null);
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all duration-200 ${
+                authMode === "signup"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Crea Account
+            </button>
+          </div>
+
+          {/* Error / Success Feedback */}
+          {authMessage && (
+            <div
+              className={`p-3.5 rounded-2xl text-xs font-medium mb-4 flex items-start gap-2.5 animate-in fade-in-50 ${
+                authMessage.type === "error"
+                  ? "bg-red-50 text-red-600 border border-red-200/60"
+                  : "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
+              }`}
+            >
+              <span className="text-sm shrink-0">{authMessage.type === "error" ? "⚠️" : "✅"}</span>
+              <span className="leading-snug">{authMessage.text}</span>
+            </div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleAuthSubmit} className="space-y-3.5">
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
+                Indirizzo Email
+              </label>
+              <div className="relative flex items-center">
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="nome@esempio.it"
+                  required
+                  className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200/80 focus:border-blue-500 pl-10 pr-3 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
+                Password
+              </label>
+              <div className="relative flex items-center">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Minimo 6 caratteri"
+                  required
+                  minLength={6}
+                  className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200/80 focus:border-blue-500 pl-10 pr-3 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={authLoading}
+              className="w-full mt-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-semibold text-sm rounded-2xl shadow-md shadow-blue-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {authLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : authMode === "login" ? (
+                <>
+                  <LogIn className="w-4 h-4" />
+                  <span>Accedi ad OnTime</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Crea il tuo Account</span>
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Subtext info */}
+          <div className="mt-6 pt-5 border-t border-slate-100 text-center">
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              I tuoi impegni, tragitti e segnaposti sincronizzati ovunque con crittografia cloud.
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="flex flex-col min-h-screen bg-[#F5F5F7] pb-24 relative overflow-x-hidden font-sans">
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
-        {/* HEADER */}
+        {/* HEADER - DECLUTTERED APPLE STYLE */}
         <header className="flex justify-between items-center px-6 py-5 pb-2">
           <div className="flex items-center gap-2.5 shrink-0">
-            <div className="relative w-7 h-7 rounded-[8px] overflow-hidden shadow-sm">
+            <div className="relative w-8 h-8 rounded-[10px] overflow-hidden shadow-sm">
               <Image src="/logo.png" alt="OnTime Logo" fill className="object-cover" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">OnTime</h1>
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-xl font-bold tracking-tight text-slate-900">OnTime</h1>
+              <Navigation2 className="w-3.5 h-3.5 text-blue-600 fill-blue-600" />
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* SUPABASE USER AUTH BUTTON */}
-            <button
-              onClick={() => {
-                setAuthMessage(null);
-                setIsAuthModalOpen(true);
-              }}
-              title={authUser ? `Connesso come: ${authUser.email}` : "Accedi / Sincronizza Account"}
-              className={`w-8 h-8 rounded-full transition-colors flex items-center justify-center shadow-sm relative ${
-                authUser
-                  ? "bg-blue-600 text-white shadow-md font-bold text-xs"
-                  : "bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-slate-800"
-              }`}
-            >
-              {authUser ? (
-                <span>{(authUser.email?.[0] || "U").toUpperCase()}</span>
-              ) : (
-                <User className="w-4 h-4" />
-              )}
-              {authUser && (
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
-              )}
-            </button>
-
-            {/* SETTINGS GEAR BUTTON */}
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              title="Impostazioni App"
-              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors flex items-center justify-center shadow-sm"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-
-            {/* NOTIFICATIONS TOGGLE BELL WITH GREEN DOT INDICATOR */}
-            <button
-              onClick={toggleNotifications}
-              title={notificationsEnabled ? "Notifiche attive" : "Attiva notifiche di partenza"}
-              className={`w-8 h-8 rounded-full transition-colors flex items-center justify-center shadow-sm relative ${
-                notificationsEnabled
-                  ? "bg-slate-900 text-white shadow-md"
-                  : "bg-gray-100 hover:bg-gray-200 text-gray-400 hover:text-gray-600"
-              }`}
-            >
-              {notificationsEnabled ? <Bell className="w-4 h-4 fill-white text-white" /> : <BellOff className="w-4 h-4" />}
-              {notificationsEnabled && (
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
-              )}
-            </button>
-
-            {/* COMPLETED ARCHIVE TRIGGER */}
-            <button
-              onClick={() => setIsHistoryOpen(true)}
-              title="Archivio Impegni Conclusi"
-              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors flex items-center justify-center shadow-sm relative"
-            >
-              <CheckCheck className="w-4 h-4" />
-              {completedEvents.length > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-blue-500 rounded-full ring-2 ring-white" />
-              )}
-            </button>
-
-            {/* TOP-RIGHT SMART LOCATION PILL (CLEAN TYPOGRAPHY) */}
+          <div className="flex items-center gap-2.5">
+            {/* 1. TOP-RIGHT SMART LOCATION PILL */}
             <button
               onClick={() => {
                 setIsEditingBase(false);
@@ -1566,9 +1689,19 @@ export default function Dashboard() {
               ) : (
                 <Home className="w-3.5 h-3.5 text-slate-500 shrink-0" />
               )}
-              <span className="text-xs font-semibold uppercase tracking-wider truncate max-w-[120px] sm:max-w-none text-right">
+              <span className="text-xs font-semibold uppercase tracking-wider truncate max-w-[130px] sm:max-w-none text-right">
                 {formatPillCity(currentCity)}
               </span>
+            </button>
+
+            {/* 2. UNIFIED APPLE PROFILE AVATAR BUTTON */}
+            <button
+              onClick={() => setIsProfileMenuOpen(true)}
+              title={`Profilo: ${authUser?.email || "Account"}`}
+              className="w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center shadow-md relative hover:scale-105 active:scale-95 transition-all"
+            >
+              <span>{(authUser?.email?.[0] || "U").toUpperCase()}</span>
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
             </button>
           </div>
         </header>
@@ -3135,137 +3268,118 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* SUPABASE AUTHENTICATION & SYNC MODAL SHEET */}
-      {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative">
+      {/* APPLE PROFILE & QUICK CONTROLS MODAL SHEET */}
+      {isProfileMenuOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-7 shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative">
+            {/* Close Button */}
             <button
-              onClick={() => {
-                setIsAuthModalOpen(false);
-                setAuthMessage(null);
-              }}
-              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
+              onClick={() => setIsProfileMenuOpen(false)}
+              className="absolute top-5 right-5 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
 
-            {authUser ? (
-              <div className="flex flex-col items-center text-center py-2">
-                <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center text-2xl font-bold mb-3 shadow-md">
-                  {(authUser.email?.[0] || "U").toUpperCase()}
-                </div>
-                <h2 className="text-xl font-bold text-slate-900 mb-1">Account Sincronizzato</h2>
-                <p className="text-xs text-slate-500 font-medium mb-4">{authUser.email}</p>
-
-                <div className="w-full bg-emerald-50 border border-emerald-200/80 rounded-[16px] p-3 mb-6 flex items-center gap-2.5 text-left">
-                  <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full shrink-0" />
-                  <p className="text-xs font-semibold text-emerald-800">
-                    Sincronizzazione cloud attiva in tempo reale con Supabase.
-                  </p>
-                </div>
-
-                <button
-                  onClick={handleLogout}
-                  className="w-full py-3.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-[16px] font-bold text-xs flex items-center justify-center gap-2 transition-colors"
-                >
-                  <LogOut className="w-4 h-4" /> Disconnetti Account
-                </button>
+            {/* User Profile Card Header */}
+            <div className="flex items-center gap-3.5 pb-5 border-b border-slate-100">
+              <div className="w-12 h-12 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-lg font-bold shadow-md shadow-blue-500/20 shrink-0">
+                {(authUser?.email?.[0] || "U").toUpperCase()}
               </div>
-            ) : (
-              <div>
-                <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-3 text-blue-600">
-                  <User className="w-6 h-6" />
+              <div className="flex-1 min-w-0 pr-8">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Account Connesso</p>
+                <h3 className="text-sm font-bold text-slate-900 truncate">{authUser?.email}</h3>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse shrink-0" />
+                  <span className="text-[11px] font-semibold text-emerald-600">Sincronizzazione Cloud Attiva</span>
                 </div>
-                <h2 className="text-[22px] font-bold text-slate-900 mb-1">Sincronizzazione Cloud</h2>
-                <p className="text-xs text-slate-500 font-medium mb-5">
-                  Sincronizza i tuoi impegni in tempo reale su iPhone, iPad e Desktop.
-                </p>
+              </div>
+            </div>
 
-                {/* Tab Switcher: Login vs Registrati */}
-                <div className="flex bg-slate-100 p-1 rounded-[14px] mb-4">
-                  <button
-                    onClick={() => {
-                      setAuthMode("login");
-                      setAuthMessage(null);
-                    }}
-                    className={`flex-1 py-2 text-xs font-bold rounded-[10px] transition-all ${
-                      authMode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
-                    }`}
-                  >
-                    Accedi
-                  </button>
-                  <button
-                    onClick={() => {
-                      setAuthMode("signup");
-                      setAuthMessage(null);
-                    }}
-                    className={`flex-1 py-2 text-xs font-bold rounded-[10px] transition-all ${
-                      authMode === "signup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
-                    }`}
-                  >
-                    Crea Account
-                  </button>
+            {/* Menu Items List */}
+            <div className="py-4 space-y-2">
+              {/* Impostazioni & Segnaposti */}
+              <button
+                onClick={() => {
+                  setIsProfileMenuOpen(false);
+                  setIsSettingsOpen(true);
+                }}
+                className="w-full flex items-center justify-between p-3.5 rounded-2xl hover:bg-slate-50 transition-colors text-left group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 group-hover:bg-blue-50 text-slate-600 group-hover:text-blue-600 flex items-center justify-center transition-colors shrink-0">
+                    <Settings className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800">Impostazioni & Segnaposti</h4>
+                    <p className="text-[11px] text-slate-400">Basi frequenti, tempo di sicurezza e preferenze</p>
+                  </div>
                 </div>
+                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0" />
+              </button>
 
-                <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3">
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="email"
-                      required
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="La tua email"
-                      className="w-full bg-[#F5F5F7] text-xs font-medium pl-10 pr-3 py-3 rounded-[14px] border border-slate-200 focus:outline-none focus:border-blue-500 text-slate-800"
-                    />
+              {/* Archivio Impegni Conclusi */}
+              <button
+                onClick={() => {
+                  setIsProfileMenuOpen(false);
+                  setIsHistoryOpen(true);
+                }}
+                className="w-full flex items-center justify-between p-3.5 rounded-2xl hover:bg-slate-50 transition-colors text-left group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 group-hover:bg-emerald-50 text-slate-600 group-hover:text-emerald-600 flex items-center justify-center transition-colors shrink-0">
+                    <CheckCheck className="w-5 h-5" />
                   </div>
-
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="password"
-                      required
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Password"
-                      className="w-full bg-[#F5F5F7] text-xs font-medium pl-10 pr-3 py-3 rounded-[14px] border border-slate-200 focus:outline-none focus:border-blue-500 text-slate-800"
-                    />
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800">Archivio Impegni Conclusi</h4>
+                    <p className="text-[11px] text-slate-400">Visualizza o ripristina gli eventi passati</p>
                   </div>
-
-                  {authMessage && (
-                    <div
-                      className={`p-3 rounded-[12px] text-xs font-semibold ${
-                        authMessage.type === "error"
-                          ? "bg-red-50 text-red-600 border border-red-200"
-                          : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                      }`}
-                    >
-                      {authMessage.text}
-                    </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {completedEvents.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold">
+                      {completedEvents.length}
+                    </span>
                   )}
+                  <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                </div>
+              </button>
 
-                  {!isSupabaseConfigured && (
-                    <p className="text-[11px] text-amber-600 bg-amber-50 p-2.5 rounded-[12px] border border-amber-200/80">
-                      💡 Nota: Per abilitare il salvataggio su Supabase, aggiungi <code className="font-mono">NEXT_PUBLIC_SUPABASE_URL</code> e <code className="font-mono">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> alle variabili d'ambiente. Senza chiavi, l'app usa il salvataggio locale.
+              {/* Gestione Notifiche */}
+              <button
+                onClick={toggleNotifications}
+                className="w-full flex items-center justify-between p-3.5 rounded-2xl hover:bg-slate-50 transition-colors text-left group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
+                    notificationsEnabled ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-400"
+                  }`}>
+                    {notificationsEnabled ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800">Notifiche di Partenza</h4>
+                    <p className="text-[11px] text-slate-400">
+                      {notificationsEnabled ? "Avvisi sonori e suoni attivi" : "Tocca per abilitare gli avvisi"}
                     </p>
-                  )}
+                  </div>
+                </div>
+                <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full shrink-0 ${
+                  notificationsEnabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
+                }`}>
+                  {notificationsEnabled ? "Attive" : "Disattivate"}
+                </span>
+              </button>
+            </div>
 
-                  <button
-                    type="submit"
-                    disabled={authLoading}
-                    className="w-full mt-2 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-[16px] text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-sm"
-                  >
-                    {authLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : authMode === "login" ? (
-                      "Accedi"
-                    ) : (
-                      "Crea Account"
-                    )}
-                  </button>
-                </form>
-              </div>
-            )}
+            {/* Danger Logout Action */}
+            <div className="pt-3 border-t border-slate-100">
+              <button
+                onClick={handleLogout}
+                className="w-full py-3.5 px-4 bg-red-50 hover:bg-red-100 active:scale-[0.98] text-red-600 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Disconnetti Account</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
