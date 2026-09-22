@@ -6,7 +6,7 @@ import { it } from "date-fns/locale";
 import { 
   Clock, MapPin, Plus, Navigation2, Check, Car, X, Loader2, Sun, 
   Trash2, CheckCircle2, CheckCheck, Undo2, Calendar, Home, Edit3, 
-  Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike 
+  Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, Bookmark 
 } from "lucide-react";
 import Image from "next/image";
 
@@ -44,6 +44,14 @@ type BaseLocation = {
   name: string;
 };
 
+type SavedPlace = {
+  id: string;
+  name: string;
+  icon: string;
+  address: string;
+  coords: { lat: number; lon: number };
+};
+
 type WeatherData = {
   temp: number;
   code: number;
@@ -64,6 +72,13 @@ const DEFAULT_BASE_LOCATION: BaseLocation = {
   coords: { lat: 39.3621, lon: 16.2251 },
   name: "Quattromiglia, Rende",
 };
+
+const DEFAULT_SAVED_PLACES: SavedPlace[] = [
+  { id: "home", name: "Casa", icon: "🏠", address: "Quattromiglia, Rende", coords: { lat: 39.3621, lon: 16.2251 } },
+  { id: "unical", name: "Unical", icon: "🎓", address: "Università della Calabria, Rende", coords: { lat: 39.3621, lon: 16.2251 } },
+  { id: "sport", name: "Sport", icon: "⚽", address: "Centro Sportivo, Rende", coords: { lat: 39.3550, lon: 16.2300 } },
+  { id: "work", name: "Lavoro", icon: "💼", address: "Ufficio, Rende", coords: { lat: 39.3600, lon: 16.2200 } },
+];
 
 const getWeatherInfo = (code: number, temp: number): WeatherData => {
   const roundedTemp = Math.round(temp);
@@ -113,6 +128,19 @@ export default function Dashboard() {
   const [currentLoc, setCurrentLoc] = useState<{ lat: number; lon: number } | null>(DEFAULT_BASE_LOCATION.coords);
   const [currentCity, setCurrentCity] = useState<string>(DEFAULT_BASE_LOCATION.name);
   const [isLocating, setIsLocating] = useState(false);
+
+  // Bookmarks / Saved Places State
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>(DEFAULT_SAVED_PLACES);
+  const [selectedBookmarkId, setSelectedBookmarkId] = useState<string | null>(null);
+
+  // New Bookmark Modal State
+  const [isBookmarkModalOpen, setIsBookmarkModalOpen] = useState(false);
+  const [newBookmarkName, setNewBookmarkName] = useState("");
+  const [newBookmarkIcon, setNewBookmarkIcon] = useState("📍");
+  const [newBookmarkAddressQuery, setNewBookmarkAddressQuery] = useState("");
+  const [newBookmarkSuggestions, setNewBookmarkSuggestions] = useState<LocationSuggestion[]>([]);
+  const [selectedBookmarkCoords, setSelectedBookmarkCoords] = useState<{ lat: number; lon: number; name: string } | null>(null);
+  const [isSearchingBookmarkAddress, setIsSearchingBookmarkAddress] = useState(false);
 
   // Weather State
   const [nextEventWeather, setNextEventWeather] = useState<WeatherData | null>(null);
@@ -201,12 +229,18 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Dual Geocode Search (Photon + Nominatim Fallback)
+  // Enhanced Proximity-Biased Dual Geocode Search (Photon with lat/lon + Municipality Retry + Nominatim Viewbox)
   const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
+    const lat = currentLoc?.lat || 39.3621;
+    const lon = currentLoc?.lon || 16.2251;
+
+    // 1. Try Photon API with Proximity Biasing
     try {
-      const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=6&lang=it`);
+      const res = await fetch(
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lon}&limit=8&lang=it`
+      );
       const data = await res.json();
       if (data.features && data.features.length > 0) {
         return data.features.map((f: any) => {
@@ -229,11 +263,47 @@ export default function Dashboard() {
         });
       }
     } catch (e) {
-      console.warn("Photon autocomplete failed, trying Nominatim fallback", e);
+      console.warn("Photon autocomplete failed, trying local fallback", e);
     }
 
+    // 2. Retry Photon with Appended Local Municipality (e.g. "via ministalla, Rende")
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&addressdetails=1&limit=6`);
+      const localCity = currentCity ? currentCity.split(",")[0].trim() : "Rende";
+      const localQuery = `${query}, ${localCity}`;
+      const res = await fetch(
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(localQuery)}&lat=${lat}&lon=${lon}&limit=8&lang=it`
+      );
+      const data = await res.json();
+      if (data.features && data.features.length > 0) {
+        return data.features.map((f: any) => {
+          const props = f.properties;
+          const mainName = props.name || props.street || query;
+          const secondary = [
+            props.street && props.name !== props.street ? `${props.street} ${props.housenumber || ""}`.trim() : null,
+            props.district || props.suburb,
+            props.city || props.town || props.village,
+            props.state
+          ].filter(Boolean).join(", ");
+
+          return {
+            name: mainName,
+            secondary,
+            fullName: secondary ? `${mainName}, ${secondary}` : mainName,
+            lat: f.geometry.coordinates[1],
+            lon: f.geometry.coordinates[0],
+          };
+        });
+      }
+    } catch (e) {
+      console.warn("Local query retry error:", e);
+    }
+
+    // 3. Nominatim Fallback with Viewbox around current location
+    try {
+      const viewbox = `${lon - 0.2},${lat - 0.2},${lon + 0.2},${lat + 0.2}`;
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&viewbox=${viewbox}&bounded=0&addressdetails=1&limit=8`
+      );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         return data.map((item: any) => {
@@ -297,6 +367,14 @@ export default function Dashboard() {
         localStorage.setItem("ontime_home_location", JSON.stringify(DEFAULT_BASE_LOCATION));
       }
       setHomeLocation(activeHome);
+
+      // Load Saved Places / Bookmarks
+      const storedPlaces = localStorage.getItem("ontime_saved_places");
+      if (storedPlaces) {
+        setSavedPlaces(JSON.parse(storedPlaces));
+      } else {
+        localStorage.setItem("ontime_saved_places", JSON.stringify(DEFAULT_SAVED_PLACES));
+      }
 
       // Load Location Mode
       const storedMode = localStorage.getItem("ontime_location_mode") as "home" | "gps" | null;
@@ -557,6 +635,23 @@ export default function Dashboard() {
     return () => clearTimeout(timeoutId);
   }, [baseSearchQuery]);
 
+  // Autocomplete effect for Creating New Bookmark
+  useEffect(() => {
+    if (newBookmarkAddressQuery.trim().length < 2 || selectedBookmarkCoords?.name === newBookmarkAddressQuery) {
+      setNewBookmarkSuggestions([]);
+      return;
+    }
+
+    setIsSearchingBookmarkAddress(true);
+    const timeoutId = setTimeout(async () => {
+      const results = await fetchSuggestions(newBookmarkAddressQuery);
+      setNewBookmarkSuggestions(results);
+      setIsSearchingBookmarkAddress(false);
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [newBookmarkAddressQuery, selectedBookmarkCoords]);
+
   if (!isMounted) return null;
 
   // Helper Mode Switches
@@ -658,6 +753,66 @@ export default function Dashboard() {
     setIsAddingCustomItem(false);
   };
 
+  // Bookmark Quick Chip Selection
+  const handleSelectBookmark = (place: SavedPlace) => {
+    if (selectedBookmarkId === place.id) {
+      setSelectedBookmarkId(null);
+      setAddressQuery("");
+      setSelectedDest(null);
+    } else {
+      setSelectedBookmarkId(place.id);
+      setAddressQuery(place.address || place.name);
+      setSelectedDest({ lat: place.coords.lat, lon: place.coords.lon, name: place.address || place.name });
+      setAddressSuggestions([]);
+    }
+  };
+
+  // Save new custom Bookmark
+  const handleSaveBookmark = async () => {
+    if (!newBookmarkName.trim()) return alert("Inserisci un nome per il segnaposto!");
+    let coords = selectedBookmarkCoords ? { lat: selectedBookmarkCoords.lat, lon: selectedBookmarkCoords.lon } : null;
+    let addr = selectedBookmarkCoords ? selectedBookmarkCoords.name : newBookmarkAddressQuery.trim();
+
+    if (!coords && addr.length > 0) {
+      const geo = await fetchSuggestions(addr);
+      if (geo.length > 0) {
+        coords = { lat: geo[0].lat, lon: geo[0].lon };
+        addr = geo[0].fullName;
+      }
+    }
+
+    if (!coords) return alert("Indirizzo non valido o non trovato.");
+
+    const newPlace: SavedPlace = {
+      id: Math.random().toString(),
+      name: newBookmarkName.trim(),
+      icon: newBookmarkIcon || "📍",
+      address: addr,
+      coords,
+    };
+
+    const updated = [...savedPlaces, newPlace];
+    setSavedPlaces(updated);
+    localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
+
+    setNewBookmarkName("");
+    setNewBookmarkIcon("📍");
+    setNewBookmarkAddressQuery("");
+    setSelectedBookmarkCoords(null);
+    setIsBookmarkModalOpen(false);
+  };
+
+  // Delete Bookmark
+  const deleteBookmark = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Eliminare questo segnaposto dai preferiti?")) {
+      const updated = savedPlaces.filter((p) => p.id !== id);
+      setSavedPlaces(updated);
+      localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
+      if (selectedBookmarkId === id) setSelectedBookmarkId(null);
+    }
+  };
+
   // Start Editing Event
   const startEditingEvent = (ev: MasterEvent) => {
     setEditingEventId(ev.id);
@@ -710,6 +865,9 @@ export default function Dashboard() {
       if (geoResults.length > 0) {
         destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
         destName = geoResults[0].fullName;
+      } else if (currentLoc) {
+        // Fallback to current location if street not found in search index
+        destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
       }
     }
 
@@ -736,7 +894,6 @@ export default function Dashboard() {
     }
 
     if (editingEventId) {
-      // Edit existing event
       setMasterEvents((prev) =>
         prev.map((e) =>
           e.id === editingEventId
@@ -757,7 +914,6 @@ export default function Dashboard() {
         )
       );
     } else {
-      // Create new event
       const newEv: MasterEvent = {
         id: Math.random().toString(),
         title: newEventTitle.trim(),
@@ -780,6 +936,7 @@ export default function Dashboard() {
     setNewEventTitle("");
     setAddressQuery("");
     setSelectedDest(null);
+    setSelectedBookmarkId(null);
     setNewEventTime("");
     setNewEventDate(format(new Date(), "yyyy-MM-dd"));
     setNewEventCategory("Personale");
@@ -1185,6 +1342,7 @@ export default function Dashboard() {
             setNewEventTitle("");
             setAddressQuery("");
             setSelectedDest(null);
+            setSelectedBookmarkId(null);
             setNewEventTime("");
             setNewEventDate(format(new Date(), "yyyy-MM-dd"));
             setNewEventCategory("Personale");
@@ -1402,6 +1560,95 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* NEW BOOKMARK CREATION MODAL */}
+      {isBookmarkModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-4 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-[32px] p-6 shadow-2xl animate-in zoom-in-95 duration-300 relative">
+            <button
+              onClick={() => setIsBookmarkModalOpen(false)}
+              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h2 className="text-xl font-bold text-slate-900 mb-1">Nuovo Segnaposto Preferito</h2>
+            <p className="text-xs text-slate-500 font-medium mb-5">Salva una posizione frequente per selezionarla con un tap.</p>
+
+            <div className="flex flex-col gap-4">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">Nome Segnaposto</label>
+                <div className="flex gap-2">
+                  <select
+                    value={newBookmarkIcon}
+                    onChange={(e) => setNewBookmarkIcon(e.target.value)}
+                    className="bg-[#F5F5F7] text-lg rounded-[14px] px-3 py-2 outline-none border-0"
+                  >
+                    {["📍", "🏠", "🎓", "⚽", "💼", "🏋️", "🛒", "☕", "🍕", "🏥"].map((emoji) => (
+                      <option key={emoji} value={emoji}>{emoji}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={newBookmarkName}
+                    onChange={(e) => setNewBookmarkName(e.target.value)}
+                    placeholder="Es. Palestra, Casa di Marco"
+                    className="flex-1 bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] px-4 py-3 outline-none text-sm placeholder:text-slate-400"
+                  />
+                </div>
+              </div>
+
+              <div className="relative">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">Indirizzo o Luogo</label>
+                <div className="relative">
+                  <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={newBookmarkAddressQuery}
+                    onChange={(e) => {
+                      setNewBookmarkAddressQuery(e.target.value);
+                      if (selectedBookmarkCoords && e.target.value !== selectedBookmarkCoords.name) {
+                        setSelectedBookmarkCoords(null);
+                      }
+                    }}
+                    placeholder="Es. Via Ministalla, Rende"
+                    className="w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] pl-10 pr-4 py-3 outline-none text-sm placeholder:text-slate-400"
+                  />
+                  {isSearchingBookmarkAddress && <Loader2 className="w-4 h-4 animate-spin text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />}
+                </div>
+
+                {newBookmarkSuggestions.length > 0 && (
+                  <div className="mt-1 bg-white rounded-[16px] shadow-lg border border-slate-100 max-h-48 overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden">
+                    {newBookmarkSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-2.5"
+                        onClick={() => {
+                          setNewBookmarkAddressQuery(s.fullName);
+                          setSelectedBookmarkCoords({ lat: s.lat, lon: s.lon, name: s.fullName });
+                          setNewBookmarkSuggestions([]);
+                        }}
+                      >
+                        <MapPin className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-slate-900 truncate">{s.name}</p>
+                          {s.secondary && <p className="text-[11px] text-slate-400 truncate mt-0.5">{s.secondary}</p>}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={handleSaveBookmark}
+                className="w-full mt-2 bg-slate-900 text-white rounded-[16px] py-3.5 font-semibold text-sm shadow-sm hover:scale-[1.01] transition-transform"
+              >
+                Salva nei Preferiti
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* COMPLETED ARCHIVE MODAL */}
       {isHistoryOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
@@ -1575,11 +1822,54 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Address Autocomplete */}
+              {/* Address Autocomplete & Saved Bookmarks Bar */}
               <div className="relative">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">
-                  Destinazione
-                </label>
+                <div className="flex justify-between items-center ml-1 mb-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">
+                    Destinazione
+                  </label>
+                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
+                    Segnaposti Rapidi
+                  </span>
+                </div>
+
+                {/* SAVED PLACES / BOOKMARKS CHIPS BAR */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-none [&::-webkit-scrollbar]:hidden">
+                  {savedPlaces.map((place) => {
+                    const isSelected = selectedBookmarkId === place.id;
+                    return (
+                      <div
+                        key={place.id}
+                        onClick={() => handleSelectBookmark(place)}
+                        className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 cursor-pointer shrink-0 border transition-all ${
+                          isSelected
+                            ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                            : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
+                        }`}
+                      >
+                        <span>{place.icon}</span>
+                        <span>{place.name}</span>
+                        {savedPlaces.length > 2 && !["home", "unical"].includes(place.id) && (
+                          <button
+                            onClick={(e) => deleteBookmark(place.id, e)}
+                            className="ml-1 opacity-60 hover:opacity-100"
+                            title="Elimina preferito"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  <button
+                    onClick={() => setIsBookmarkModalOpen(true)}
+                    className="px-2.5 py-1.5 rounded-[12px] text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 shrink-0 flex items-center gap-1 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-slate-500" /> Nuovo
+                  </button>
+                </div>
+
                 <div className="relative">
                   <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -1589,6 +1879,7 @@ export default function Dashboard() {
                       setAddressQuery(e.target.value);
                       if (selectedDest && e.target.value !== selectedDest.name) {
                         setSelectedDest(null);
+                        setSelectedBookmarkId(null);
                       }
                     }}
                     placeholder="Cerca via, locale o città"
@@ -1597,8 +1888,8 @@ export default function Dashboard() {
                   {isSearchingAddress && <Loader2 className="w-4 h-4 animate-spin text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />}
                 </div>
 
-                {/* Suggestions Dropdown (Photon + Nominatim) */}
-                {addressSuggestions.length > 0 && (
+                {/* Suggestions Dropdown (Photon + Nominatim + Manual Fallback) */}
+                {addressQuery.trim().length >= 2 && (addressSuggestions.length > 0 || !selectedDest) && (
                   <div className="absolute top-full left-0 right-0 z-[999] bg-white rounded-xl shadow-2xl border border-gray-100 max-h-56 overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden mt-1">
                     {addressSuggestions.map((s, i) => (
                       <button
@@ -1617,6 +1908,19 @@ export default function Dashboard() {
                         </div>
                       </button>
                     ))}
+
+                    {/* MANUAL FALLBACK OPTION FOR UNINDEXED STREETS */}
+                    <button
+                      className="w-full text-left px-4 py-3 bg-slate-50 hover:bg-blue-50 border-t border-slate-100 transition-colors flex items-center gap-2.5 text-blue-600 font-semibold text-xs"
+                      onClick={() => {
+                        const coords = currentLoc || DEFAULT_BASE_LOCATION.coords;
+                        setSelectedDest({ lat: coords.lat, lon: coords.lon, name: addressQuery });
+                        setAddressSuggestions([]);
+                      }}
+                    >
+                      <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
+                      <span className="truncate">📍 Usa posizione attuale per "{addressQuery}"</span>
+                    </button>
                   </div>
                 )}
               </div>
