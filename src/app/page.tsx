@@ -6,7 +6,8 @@ import { it } from "date-fns/locale";
 import { 
   Clock, MapPin, Plus, Navigation2, Check, Car, X, Loader2, Sun, 
   Trash2, CheckCircle2, CheckCheck, Undo2, Calendar, Home, Edit3, 
-  Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, Bookmark 
+  Bell, BellOff, ExternalLink, Map, CloudRain, Pencil, Footprints, Bike, 
+  Settings, Volume2, Sliders, ShieldAlert, Sparkles, RefreshCw 
 } from "lucide-react";
 import Image from "next/image";
 
@@ -108,10 +109,39 @@ const getWeatherInfo = (code: number, temp: number): WeatherData => {
   return { temp: roundedTemp, code, label, icon, isRainy };
 };
 
-const getOsrmProfile = (mode?: TransportMode) => {
-  if (mode === "walking") return "foot";
-  if (mode === "cycling") return "bike";
-  return "driving";
+// Robust OSRM Profile Route Duration Calculation
+const fetchOsrmRouteMins = async (
+  startCoords: { lat: number; lon: number },
+  destCoords: { lat: number; lon: number },
+  mode: TransportMode = "driving"
+): Promise<number> => {
+  const profile = mode === "walking" ? "foot" : mode === "cycling" ? "bike" : "driving";
+  try {
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${startCoords.lon},${startCoords.lat};${destCoords.lon},${destCoords.lat}?overview=false`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.code === "Ok" && data.routes && data.routes.length > 0) {
+      return Math.max(1, Math.round(data.routes[0].duration / 60));
+    }
+  } catch (e) {
+    console.warn(`OSRM ${profile} route fetch error:`, e);
+  }
+
+  // Haversine fallback estimate if OSRM is offline
+  const R = 6371;
+  const dLat = (destCoords.lat - startCoords.lat) * (Math.PI / 180);
+  const dLon = (destCoords.lon - startCoords.lon) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(startCoords.lat * (Math.PI / 180)) *
+      Math.cos(destCoords.lat * (Math.PI / 180)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distKm = R * c;
+
+  const speedKmh = mode === "walking" ? 4.5 : mode === "cycling" ? 15 : 35;
+  return Math.max(2, Math.round((distKm / speedKmh) * 60));
 };
 
 export default function Dashboard() {
@@ -128,6 +158,12 @@ export default function Dashboard() {
   const [currentLoc, setCurrentLoc] = useState<{ lat: number; lon: number } | null>(DEFAULT_BASE_LOCATION.coords);
   const [currentCity, setCurrentCity] = useState<string>(DEFAULT_BASE_LOCATION.name);
   const [isLocating, setIsLocating] = useState(false);
+
+  // Settings & Travel Preferences State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [defaultSafetyBuffer, setDefaultSafetyBuffer] = useState<number>(10);
+  const [defaultTransportMode, setDefaultTransportMode] = useState<TransportMode>("driving");
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
 
   // Bookmarks / Saved Places State
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>(DEFAULT_SAVED_PLACES);
@@ -229,7 +265,7 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Enhanced Proximity-Biased Dual Geocode Search (Photon with lat/lon + Municipality Retry + Nominatim Viewbox)
+  // Dual Geocode Search (Photon + Nominatim with countrycodes=it)
   const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
@@ -266,50 +302,18 @@ export default function Dashboard() {
       console.warn("Photon autocomplete failed, trying local fallback", e);
     }
 
-    // 2. Retry Photon with Appended Local Municipality (e.g. "via ministalla, Rende")
+    // 2. Nominatim API with countrycodes=it
     try {
-      const localCity = currentCity ? currentCity.split(",")[0].trim() : "Rende";
-      const localQuery = `${query}, ${localCity}`;
+      const viewbox = `${lon - 0.25},${lat - 0.25},${lon + 0.25},${lat + 0.25}`;
       const res = await fetch(
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(localQuery)}&lat=${lat}&lon=${lon}&limit=8&lang=it`
-      );
-      const data = await res.json();
-      if (data.features && data.features.length > 0) {
-        return data.features.map((f: any) => {
-          const props = f.properties;
-          const mainName = props.name || props.street || query;
-          const secondary = [
-            props.street && props.name !== props.street ? `${props.street} ${props.housenumber || ""}`.trim() : null,
-            props.district || props.suburb,
-            props.city || props.town || props.village,
-            props.state
-          ].filter(Boolean).join(", ");
-
-          return {
-            name: mainName,
-            secondary,
-            fullName: secondary ? `${mainName}, ${secondary}` : mainName,
-            lat: f.geometry.coordinates[1],
-            lon: f.geometry.coordinates[0],
-          };
-        });
-      }
-    } catch (e) {
-      console.warn("Local query retry error:", e);
-    }
-
-    // 3. Nominatim Fallback with Viewbox around current location
-    try {
-      const viewbox = `${lon - 0.2},${lat - 0.2},${lon + 0.2},${lat + 0.2}`;
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&viewbox=${viewbox}&bounded=0&addressdetails=1&limit=8`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&viewbox=${viewbox}&bounded=0&addressdetails=1&limit=8`
       );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         return data.map((item: any) => {
           const addr = item.address || {};
           const mainName = addr.amenity || addr.building || addr.road || item.display_name.split(",")[0];
-          const secondary = [addr.suburb, addr.city || addr.town || addr.village, addr.state].filter(Boolean).join(", ");
+          const secondary = [addr.road, addr.suburb, addr.city || addr.town || addr.village, addr.state].filter(Boolean).join(", ");
           return {
             name: mainName,
             secondary,
@@ -369,16 +373,23 @@ export default function Dashboard() {
       setHomeLocation(activeHome);
 
       // Load Saved Places / Bookmarks
-      const storedPlaces = localStorage.getItem("ontime_saved_places");
+      const storedPlaces = localStorage.getItem("ontime_saved_places") || localStorage.getItem("ontime_bookmarks");
       if (storedPlaces) {
         setSavedPlaces(JSON.parse(storedPlaces));
       } else {
         localStorage.setItem("ontime_saved_places", JSON.stringify(DEFAULT_SAVED_PLACES));
       }
 
+      // Load Travel Preferences
+      const storedBuf = localStorage.getItem("ontime_default_buffer");
+      if (storedBuf) setDefaultSafetyBuffer(parseInt(storedBuf));
+
+      const storedMode = localStorage.getItem("ontime_default_transport") as TransportMode | null;
+      if (storedMode) setDefaultTransportMode(storedMode);
+
       // Load Location Mode
-      const storedMode = localStorage.getItem("ontime_location_mode") as "home" | "gps" | null;
-      const initialMode = storedMode || "home";
+      const storedLocMode = localStorage.getItem("ontime_location_mode") as "home" | "gps" | null;
+      const initialMode = storedLocMode || "home";
       setLocationMode(initialMode);
 
       if (initialMode === "home") {
@@ -420,7 +431,7 @@ export default function Dashboard() {
           body: `${ev.title} ti aspetta. Tragitto stimato: ${travelMins} min.`,
           icon: "/logo.png",
           badge: "/logo.png",
-          vibrate: [200, 100, 200],
+          vibrate: vibrationEnabled ? [200, 100, 200] : undefined,
           tag: `departure_${ev.id}`,
         };
 
@@ -431,7 +442,7 @@ export default function Dashboard() {
         }
       }
     });
-  }, [now, masterEvents, isMounted, notifiedKeys, swRegistration]);
+  }, [now, masterEvents, isMounted, notifiedKeys, swRegistration, vibrationEnabled]);
 
   // Manage Live GPS Watch & Mode Switch
   useEffect(() => {
@@ -511,7 +522,7 @@ export default function Dashboard() {
     }
   }, [masterEvents, isMounted]);
 
-  // Recalculate routes IMMEDIATELY whenever currentLoc changes
+  // REACTIVE ROUTE RECALCULATION when currentLoc or masterEvents change
   useEffect(() => {
     if (!currentLoc || masterEvents.length === 0 || !isMounted) return;
 
@@ -521,17 +532,10 @@ export default function Dashboard() {
         masterEvents.map(async (ev) => {
           if (ev.status !== "active" || !ev.destinationCoords?.lat || !ev.destinationCoords?.lon) return ev;
           try {
-            const profile = getOsrmProfile(ev.transportMode);
-            const routeRes = await fetch(
-              `https://router.project-osrm.org/route/v1/${profile}/${currentLoc.lon},${currentLoc.lat};${ev.destinationCoords.lon},${ev.destinationCoords.lat}?overview=false`
-            );
-            const routeData = await routeRes.json();
-            if (routeData.code === "Ok" && routeData.routes.length > 0) {
-              const newMins = Math.round(routeData.routes[0].duration / 60);
-              if (newMins !== ev.travelTimeMins) {
-                updated = true;
-                return { ...ev, travelTimeMins: newMins };
-              }
+            const newMins = await fetchOsrmRouteMins(currentLoc, ev.destinationCoords, ev.transportMode || "driving");
+            if (newMins !== ev.travelTimeMins) {
+              updated = true;
+              return { ...ev, travelTimeMins: newMins };
             }
           } catch (e) {
             console.error("Recalculation error", e);
@@ -703,7 +707,7 @@ export default function Dashboard() {
         body: "Ti avviseremo sul blocco schermo quando è ora di uscire!",
         icon: "/logo.png",
         badge: "/logo.png",
-        vibrate: [200, 100, 200],
+        vibrate: vibrationEnabled ? [200, 100, 200] : undefined,
       };
 
       if (reg && "showNotification" in reg) {
@@ -794,6 +798,7 @@ export default function Dashboard() {
     const updated = [...savedPlaces, newPlace];
     setSavedPlaces(updated);
     localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
+    localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
 
     setNewBookmarkName("");
     setNewBookmarkIcon("📍");
@@ -803,12 +808,13 @@ export default function Dashboard() {
   };
 
   // Delete Bookmark
-  const deleteBookmark = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const deleteBookmark = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     if (window.confirm("Eliminare questo segnaposto dai preferiti?")) {
       const updated = savedPlaces.filter((p) => p.id !== id);
       setSavedPlaces(updated);
       localStorage.setItem("ontime_saved_places", JSON.stringify(updated));
+      localStorage.setItem("ontime_bookmarks", JSON.stringify(updated));
       if (selectedBookmarkId === id) setSelectedBookmarkId(null);
     }
   };
@@ -866,7 +872,6 @@ export default function Dashboard() {
         destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
         destName = geoResults[0].fullName;
       } else if (currentLoc) {
-        // Fallback to current location if street not found in search index
         destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
       }
     }
@@ -879,18 +884,7 @@ export default function Dashboard() {
 
     let finalTravelTime = 10;
     if (currentLoc && destCoords) {
-      try {
-        const profile = getOsrmProfile(newEventTransportMode);
-        const routeRes = await fetch(
-          `https://router.project-osrm.org/route/v1/${profile}/${currentLoc.lon},${currentLoc.lat};${destCoords.lon},${destCoords.lat}?overview=false`
-        );
-        const routeData = await routeRes.json();
-        if (routeData.code === "Ok" && routeData.routes.length > 0) {
-          finalTravelTime = Math.round(routeData.routes[0].duration / 60);
-        }
-      } catch (err) {
-        console.error("Routing error on creation:", err);
-      }
+      finalTravelTime = await fetchOsrmRouteMins(currentLoc, destCoords, newEventTransportMode);
     }
 
     if (editingEventId) {
@@ -940,8 +934,8 @@ export default function Dashboard() {
     setNewEventTime("");
     setNewEventDate(format(new Date(), "yyyy-MM-dd"));
     setNewEventCategory("Personale");
-    setNewEventBuffer(10);
-    setNewEventTransportMode("driving");
+    setNewEventBuffer(defaultSafetyBuffer);
+    setNewEventTransportMode(defaultTransportMode);
     setNewEventChecklist([]);
     setCustomItemInput("");
     setIsSaving(false);
@@ -953,6 +947,20 @@ export default function Dashboard() {
       setNewEventChecklist((prev) => prev.filter((i) => i !== item));
     } else {
       setNewEventChecklist((prev) => [...prev, item]);
+    }
+  };
+
+  const resetAllData = () => {
+    if (window.confirm("⚠️ Vuoi davvero cancellare TUTTI i dati dell'app (eventi, segnaposti e impostazioni)? L'azione è irreversibile.")) {
+      localStorage.clear();
+      setMasterEvents([]);
+      setSavedPlaces(DEFAULT_SAVED_PLACES);
+      setHomeLocation(DEFAULT_BASE_LOCATION);
+      setLocationMode("home");
+      setCurrentLoc(DEFAULT_BASE_LOCATION.coords);
+      setCurrentCity(DEFAULT_BASE_LOCATION.name);
+      setIsSettingsOpen(false);
+      alert("Tutti i dati dell'applicazione sono stati cancellati.");
     }
   };
 
@@ -1046,6 +1054,15 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* SETTINGS GEAR BUTTON */}
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              title="Impostazioni App"
+              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors flex items-center justify-center shadow-sm"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
             {/* NOTIFICATIONS TOGGLE BELL WITH GREEN DOT INDICATOR */}
             <button
               onClick={toggleNotifications}
@@ -1093,7 +1110,7 @@ export default function Dashboard() {
               ) : (
                 <Home className="w-3.5 h-3.5 text-slate-500 shrink-0" />
               )}
-              <span className="text-xs font-semibold uppercase tracking-wider truncate max-w-[130px] sm:max-w-none text-right">
+              <span className="text-xs font-semibold uppercase tracking-wider truncate max-w-[120px] sm:max-w-none text-right">
                 {formatPillCity(currentCity)}
               </span>
             </button>
@@ -1155,6 +1172,8 @@ export default function Dashboard() {
               <button
                 onClick={() => {
                   setEditingEventId(null);
+                  setNewEventBuffer(defaultSafetyBuffer);
+                  setNewEventTransportMode(defaultTransportMode);
                   setIsFabOpen(true);
                 }}
                 className="w-full bg-slate-900 text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:scale-[1.02] transition-transform"
@@ -1346,8 +1365,8 @@ export default function Dashboard() {
             setNewEventTime("");
             setNewEventDate(format(new Date(), "yyyy-MM-dd"));
             setNewEventCategory("Personale");
-            setNewEventBuffer(10);
-            setNewEventTransportMode("driving");
+            setNewEventBuffer(defaultSafetyBuffer);
+            setNewEventTransportMode(defaultTransportMode);
             setNewEventChecklist([]);
             setIsFabOpen(true);
           }}
@@ -1355,6 +1374,168 @@ export default function Dashboard() {
         >
           <Plus className="w-6 h-6" />
         </button>
+      )}
+
+      {/* SETTINGS MODAL SHEET */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 max-h-[88vh] overflow-y-auto scrollbar-none [&::-webkit-scrollbar]:hidden relative">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-[22px] font-bold text-slate-900">Impostazioni</h2>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-6">
+              {/* SECTION 1: SEGNAPOSTI / BOOKMARKS */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-3">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">I Miei Segnaposti Preferiti</h3>
+                  <button
+                    onClick={() => {
+                      setIsBookmarkModalOpen(true);
+                    }}
+                    className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Aggiungi
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {savedPlaces.map((place) => (
+                    <div key={place.id} className="bg-white p-3 rounded-[14px] flex justify-between items-center border border-slate-100 shadow-sm">
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <span className="text-lg">{place.icon}</span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-800 truncate">{place.name}</p>
+                          <p className="text-[11px] text-slate-400 truncate">{place.address}</p>
+                        </div>
+                      </div>
+                      {savedPlaces.length > 1 && (
+                        <button
+                          onClick={(e) => deleteBookmark(place.id, e)}
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                          title="Elimina"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* SECTION 2: PREFERENZE VIAGGIO */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-4">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Preferenze Predefinite</h3>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-2">Anticipo di sicurezza di default</label>
+                  <div className="flex gap-2">
+                    {[5, 10, 15, 20].map((mins) => (
+                      <button
+                        key={mins}
+                        onClick={() => {
+                          setDefaultSafetyBuffer(mins);
+                          localStorage.setItem("ontime_default_buffer", mins.toString());
+                        }}
+                        className={`flex-1 py-2 rounded-[12px] text-xs font-bold transition-all border ${
+                          defaultSafetyBuffer === mins
+                            ? "bg-slate-900 text-white border-slate-900 shadow-sm"
+                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        +{mins} min
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-2">Mezzo di trasporto predefinito</label>
+                  <div className="flex bg-white p-1 rounded-[14px] border border-slate-200">
+                    <button
+                      onClick={() => {
+                        setDefaultTransportMode("driving");
+                        localStorage.setItem("ontime_default_transport", "driving");
+                      }}
+                      className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
+                        defaultTransportMode === "driving"
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      <Car className="w-3.5 h-3.5" /> Auto
+                    </button>
+                    <button
+                      onClick={() => {
+                        setDefaultTransportMode("walking");
+                        localStorage.setItem("ontime_default_transport", "walking");
+                      }}
+                      className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
+                        defaultTransportMode === "walking"
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      <Footprints className="w-3.5 h-3.5" /> Piedi
+                    </button>
+                    <button
+                      onClick={() => {
+                        setDefaultTransportMode("cycling");
+                        localStorage.setItem("ontime_default_transport", "cycling");
+                      }}
+                      className={`flex-1 py-2 text-xs font-bold rounded-[10px] flex items-center justify-center gap-1.5 transition-all ${
+                        defaultTransportMode === "cycling"
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      <Bike className="w-3.5 h-3.5" /> Bici
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 3: AUDIO & SUONI */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-3">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Suoni & Notifiche</h3>
+
+                <div className="flex justify-between items-center bg-white p-3 rounded-[14px] border border-slate-100">
+                  <div className="flex items-center gap-2.5">
+                    <Volume2 className="w-4 h-4 text-slate-600" />
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">Campanello di Partenza</p>
+                      <p className="text-[11px] text-slate-400">Suono Web Audio integrato</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={playDepartureChime}
+                    className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-full text-xs font-bold transition-colors"
+                  >
+                    🔊 Test Suono
+                  </button>
+                </div>
+              </div>
+
+              {/* SECTION 4: RESET DATI */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={resetAllData}
+                  className="w-full text-xs font-bold text-red-500 py-3 bg-red-50 hover:bg-red-100 rounded-[14px] transition-colors flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" /> Reset Completo e Cancella Dati App
+                </button>
+              </div>
+            </div>
+
+            <div className="h-4 sm:h-0" />
+          </div>
+        </div>
       )}
 
       {/* MAPS CHOOSER MODAL SHEET WITH TRANSPORT MODE PARAMS */}
@@ -1833,7 +2014,7 @@ export default function Dashboard() {
                   </span>
                 </div>
 
-                {/* SAVED PLACES / BOOKMARKS CHIPS BAR */}
+                {/* SAVED PLACES / BOOKMARKS CHIPS BAR FROM SETTINGS */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-none [&::-webkit-scrollbar]:hidden">
                   {savedPlaces.map((place) => {
                     const isSelected = selectedBookmarkId === place.id;
@@ -1849,15 +2030,6 @@ export default function Dashboard() {
                       >
                         <span>{place.icon}</span>
                         <span>{place.name}</span>
-                        {savedPlaces.length > 2 && !["home", "unical"].includes(place.id) && (
-                          <button
-                            onClick={(e) => deleteBookmark(place.id, e)}
-                            className="ml-1 opacity-60 hover:opacity-100"
-                            title="Elimina preferito"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        )}
                       </div>
                     );
                   })}
@@ -1919,7 +2091,7 @@ export default function Dashboard() {
                       }}
                     >
                       <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
-                      <span className="truncate">📍 Usa posizione attuale per "{addressQuery}"</span>
+                      <span className="truncate">📍 Usa indirizzo digitato: "{addressQuery}"</span>
                     </button>
                   </div>
                 )}
