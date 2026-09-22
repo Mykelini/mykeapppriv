@@ -1,11 +1,12 @@
-// OnTime PWA Service Worker for Mobile & Lock Screen Notifications
-
+// OnTime Service Worker Clean Reset
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  // Do not aggressively hijack windows to prevent iOS WebKit navigation crashes
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+  );
 });
 
 self.addEventListener('message', (event) => {
