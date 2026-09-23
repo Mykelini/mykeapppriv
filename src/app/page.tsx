@@ -335,7 +335,7 @@ export default function Dashboard() {
     // 1. Primary Engine: Mapbox Geocoding Places API
     if (activeMapboxToken) {
       try {
-        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,place&limit=6&language=it`;
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,poi.landmark&fuzzyMatch=true&limit=8&language=it`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -368,7 +368,7 @@ export default function Dashboard() {
     // 2. Fallback Engine: Nominatim API bounded search
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&limit=6`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&addressdetails=1&limit=6`
       );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -1111,6 +1111,96 @@ export default function Dashboard() {
     setTimeout(() => setBookmarkSavedFeedback(false), 2500);
   };
 
+  // --- IOS PWA FIX: Safe Resume on App Switch ---
+  useEffect(() => {
+    const handleResume = (event: any) => {
+      if (event.persisted || document.visibilityState === 'visible') {
+        window.dispatchEvent(new Event('resize'));
+      }
+    };
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleResume);
+    return () => {
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleResume);
+    };
+  }, []);
+
+  // --- IOS PWA FIX: Draft Auto-Save ---
+  useEffect(() => {
+    if (!isMounted || editingEventId !== null || !isFabOpen) return;
+    const draft = {
+      title: newEventTitle,
+      date: newEventDate,
+      time: newEventTime,
+      category: newEventCategory,
+      buffer: newEventBuffer,
+      transport: newEventTransportMode,
+      checklist: newEventChecklist,
+      addressQuery,
+      selectedDest,
+      originType,
+      originBookmarkId,
+      originCustomCoords,
+      originCustomAddress,
+      originCustomQuery
+    };
+    sessionStorage.setItem("ontime_event_draft", JSON.stringify(draft));
+  }, [
+    isMounted, isFabOpen, editingEventId, newEventTitle, newEventDate, newEventTime,
+    newEventCategory, newEventBuffer, newEventTransportMode, newEventChecklist,
+    addressQuery, selectedDest, originType, originBookmarkId, originCustomCoords,
+    originCustomAddress, originCustomQuery
+  ]);
+
+  const resetNewEventForm = (dateFallback?: string) => {
+    setNewEventTitle("");
+    setAddressQuery("");
+    setSelectedDest(null);
+    setSelectedBookmarkId(null);
+    setNewEventTime("");
+    setNewEventDate(dateFallback || format(new Date(), "yyyy-MM-dd"));
+    setNewEventCategory("Personale");
+    setNewEventBuffer(defaultSafetyBuffer);
+    setNewEventTransportMode(defaultTransportMode);
+    setNewEventChecklist([]);
+    setOriginType("live");
+    setOriginBookmarkId(null);
+    setOriginCustomCoords(null);
+    setOriginCustomAddress(null);
+    setOriginCustomQuery("");
+  };
+
+  const openNewEventModal = (dateFallback?: string) => {
+    setEditingEventId(null);
+    const savedDraft = sessionStorage.getItem("ontime_event_draft");
+    if (savedDraft) {
+      try {
+        const draft = JSON.parse(savedDraft);
+        setNewEventTitle(draft.title || "");
+        setAddressQuery(draft.addressQuery || "");
+        setSelectedDest(draft.selectedDest || null);
+        setSelectedBookmarkId(null);
+        setNewEventTime(draft.time || "");
+        setNewEventDate(draft.date || dateFallback || format(new Date(), "yyyy-MM-dd"));
+        setNewEventCategory(draft.category || "Personale");
+        setNewEventBuffer(draft.buffer || defaultSafetyBuffer);
+        setNewEventTransportMode(draft.transport || defaultTransportMode);
+        setNewEventChecklist(draft.checklist || []);
+        setOriginType(draft.originType || "live");
+        setOriginBookmarkId(draft.originBookmarkId || null);
+        setOriginCustomCoords(draft.originCustomCoords || null);
+        setOriginCustomAddress(draft.originCustomAddress || null);
+        setOriginCustomQuery(draft.originCustomQuery || "");
+      } catch (e) {
+        resetNewEventForm(dateFallback);
+      }
+    } else {
+      resetNewEventForm(dateFallback);
+    }
+    setIsFabOpen(true);
+  };
+
   // Start Editing Event
   const startEditingEvent = (ev: MasterEvent) => {
     setEditingEventId(ev.id);
@@ -1530,18 +1620,8 @@ export default function Dashboard() {
       setDateTab("tutti");
     }
 
-    setOriginBookmarkId(null);
-    setEditingEventId(null);
-    setNewEventTitle("");
-    setAddressQuery("");
-    setSelectedDest(null);
-    setSelectedBookmarkId(null);
-    setNewEventTime("");
-    setNewEventDate(format(new Date(), "yyyy-MM-dd"));
-    setNewEventCategory("Personale");
-    setNewEventBuffer(defaultSafetyBuffer);
-    setNewEventTransportMode(defaultTransportMode);
-    setNewEventChecklist([]);
+    resetNewEventForm();
+    sessionStorage.removeItem("ontime_event_draft");
     setCustomItemInput("");
     setIsSaving(false);
     setIsFabOpen(false);
@@ -1831,7 +1911,10 @@ export default function Dashboard() {
     <main className="flex flex-col min-h-screen bg-[#F5F5F7] pb-24 relative overflow-x-hidden font-sans">
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
         {/* HEADER - DECLUTTERED APPLE STYLE */}
-        <header className="w-full max-w-full px-4 py-3 flex items-center justify-between overflow-x-hidden">
+        <header 
+          className="w-full max-w-full px-4 pb-3 flex items-center justify-between overflow-x-hidden bg-[#F5F5F7] sticky top-0 z-50"
+          style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}
+        >
           <div className="flex items-center gap-2.5 shrink-0">
             <div className="relative w-8 h-8 rounded-[10px] overflow-hidden shadow-sm shrink-0">
               <Image src="/logo.png" alt="OnTime Logo" fill className="object-cover" />
@@ -2062,11 +2145,7 @@ export default function Dashboard() {
                 </h3>
                 <button
                   onClick={() => {
-                    setEditingEventId(null);
-                    setNewEventDate(selectedCalendarDate);
-                    setNewEventBuffer(defaultSafetyBuffer);
-                    setNewEventTransportMode(defaultTransportMode);
-                    setIsFabOpen(true);
+                    openNewEventModal(selectedCalendarDate);
                   }}
                   className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1"
                 >
@@ -2085,11 +2164,7 @@ export default function Dashboard() {
                       <p className="text-xs font-medium text-slate-400">Nessun impegno in programma per questa data.</p>
                       <button
                         onClick={() => {
-                          setEditingEventId(null);
-                          setNewEventDate(selectedCalendarDate);
-                          setNewEventBuffer(defaultSafetyBuffer);
-                          setNewEventTransportMode(defaultTransportMode);
-                          setIsFabOpen(true);
+                          openNewEventModal(selectedCalendarDate);
                         }}
                         className="mt-3 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-full inline-flex items-center gap-1.5 transition-colors"
                       >
@@ -2154,10 +2229,7 @@ export default function Dashboard() {
               </p>
               <button
                 onClick={() => {
-                  setEditingEventId(null);
-                  setNewEventBuffer(defaultSafetyBuffer);
-                  setNewEventTransportMode(defaultTransportMode);
-                  setIsFabOpen(true);
+                  openNewEventModal(selectedCalendarDate);
                 }}
                 className="w-full bg-slate-900 text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:scale-[1.02] transition-transform"
               >
@@ -2380,18 +2452,7 @@ export default function Dashboard() {
       {masterEvents.length > 0 && (
         <button
           onClick={() => {
-            setEditingEventId(null);
-            setNewEventTitle("");
-            setAddressQuery("");
-            setSelectedDest(null);
-            setSelectedBookmarkId(null);
-            setNewEventTime("");
-            setNewEventDate(format(new Date(), "yyyy-MM-dd"));
-            setNewEventCategory("Personale");
-            setNewEventBuffer(defaultSafetyBuffer);
-            setNewEventTransportMode(defaultTransportMode);
-            setNewEventChecklist([]);
-            setIsFabOpen(true);
+            openNewEventModal();
           }}
           className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 w-[52px] h-[52px] bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg shadow-slate-900/20 hover:scale-105 active:scale-95 transition-all z-40"
         >
@@ -2696,15 +2757,14 @@ export default function Dashboard() {
               </p>
 
               <div className="flex flex-col gap-3">
-                <a
-                  href={
-                    currentLoc && mapsTargetEvent.destinationCoords
+                <button
+                  onClick={() => {
+                    const url = currentLoc && mapsTargetEvent.destinationCoords
                       ? `https://www.google.com/maps/dir/?api=1&origin=${currentLoc.lat},${currentLoc.lon}&destination=${mapsTargetEvent.destinationCoords.lat},${mapsTargetEvent.destinationCoords.lon}&travelmode=${gmapMode}`
-                      : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsTargetEvent.destinationName)}&travelmode=${gmapMode}`
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => setMapsTargetEvent(null)}
+                      : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsTargetEvent.destinationName)}&travelmode=${gmapMode}`;
+                    window.open(url, '_system');
+                    setMapsTargetEvent(null);
+                  }}
                   className="w-full py-4 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all"
                 >
                   <div className="flex items-center gap-3">
@@ -2712,7 +2772,7 @@ export default function Dashboard() {
                     <span>Google Maps</span>
                   </div>
                   <ExternalLink className="w-4 h-4 opacity-70" />
-                </a>
+                </button>
 
                 <a
                   href={
@@ -3416,7 +3476,7 @@ export default function Dashboard() {
                         e.stopPropagation();
                         window.open(
                           `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressQuery)}`,
-                          "_blank"
+                          "_system"
                         );
                       }}
                     >
@@ -3431,19 +3491,28 @@ export default function Dashboard() {
                       </span>
                     </button>
 
-                    {/* MANUAL FALLBACK OPTION */}
+                    {/* MANUAL FALLBACK OPTION - Usa questo nome */}
                     <button
                       type="button"
                       className="w-full text-left px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border-t border-slate-100 transition-colors flex items-center gap-2 text-slate-600 font-semibold text-xs"
-                      onClick={() => {
-                        if (!currentLoc) return alert("Posizione GPS assente");
-                        const coords = currentLoc;
-                        setSelectedDest({ lat: coords.lat, lon: coords.lon, name: addressQuery });
+                      onClick={async () => {
+                        if (currentCity && currentLoc) {
+                          const geo = await fetchSuggestions(currentCity);
+                          if (geo.length > 0) {
+                            setSelectedDest({ lat: geo[0].lat, lon: geo[0].lon, name: addressQuery.trim() });
+                          } else {
+                            setSelectedDest({ lat: currentLoc.lat, lon: currentLoc.lon, name: addressQuery.trim() });
+                          }
+                        } else if (currentLoc) {
+                          setSelectedDest({ lat: currentLoc.lat, lon: currentLoc.lon, name: addressQuery.trim() });
+                        } else {
+                          alert("Posizione non disponibile per il salvataggio manuale");
+                        }
                         setAddressSuggestions([]);
                       }}
                     >
                       <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span className="truncate">Usa testo digitato: "{addressQuery}"</span>
+                      <span className="truncate">Usa questo nome: "{addressQuery}"</span>
                     </button>
                   </div>
                 )}
