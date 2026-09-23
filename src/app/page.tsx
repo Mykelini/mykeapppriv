@@ -440,12 +440,7 @@ export default function Dashboard() {
     setIsMounted(true);
 
     try {
-      // Load Master Events
-      // Load Master Events
-      const storedMaster = localStorage.getItem("ontime_master_events");
-      if (storedMaster) {
-        setMasterEvents(JSON.parse(storedMaster));
-      }
+      // Master events are loaded purely from Supabase now
 
       // Load Mapbox Token (Still valid in local storage as it's an API key)
       const storedMapbox = localStorage.getItem("ontime_mapbox_token");
@@ -519,17 +514,23 @@ export default function Dashboard() {
     return () => subscription.unsubscribe();
   }, [isMounted]);
 
-  const fetchUserEvents = async () => {
-    if (!authUser || !supabase) return;
+  const loadUserEvents = async () => {
+    if (!supabase) return;
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setMasterEvents([]);
+        return;
+      }
       const { data, error } = await supabase
         .from("events")
         .select("*")
-        .eq("user_id", authUser.id)
-        .order("created_at", { ascending: true });
+        .eq("user_id", user.id)
+        .order("target_time", { ascending: true });
 
       if (error) {
-        console.warn("Supabase load error:", error);
+        console.error("Fetch error:", error);
+        alert("Errore caricamento impegni: " + error.message);
         return;
       }
       if (data) {
@@ -551,7 +552,7 @@ export default function Dashboard() {
         setMasterEvents(synced);
       }
     } catch (e) {
-      console.error("fetchUserEvents error:", e);
+      console.error("loadUserEvents error:", e);
     }
   };
 
@@ -598,15 +599,19 @@ export default function Dashboard() {
       }
     };
 
-    fetchUserEvents();
+    loadUserEvents();
     syncSettings();
 
     // Supabase Real-Time Subscription
     const channel = client
-      .channel("realtime_events")
-      .on("postgres_changes", { event: "*", schema: "public", table: "events", filter: `user_id=eq.${authUser.id}` }, () => {
-        fetchUserEvents(); // Re-fetches immediately when changed on PC or phone
-      })
+      .channel(`user-events-${authUser.id}`)
+      .on(
+        "postgres_changes", 
+        { event: "*", schema: "public", table: "events", filter: `user_id=eq.${authUser.id}` }, 
+        () => {
+          loadUserEvents(); // Re-fetches immediately when changed on PC or phone
+        }
+      )
       .subscribe();
 
     return () => {
@@ -750,12 +755,7 @@ export default function Dashboard() {
     }
   }, [locationMode, homeLocation, isMounted]);
 
-  // Save Master Events to localStorage on change
-  useEffect(() => {
-    if (isMounted) {
-      localStorage.setItem("ontime_master_events", JSON.stringify(masterEvents));
-    }
-  }, [masterEvents, isMounted]);
+  // LocalStorage caching is removed in favor of Supabase as single source of truth
 
   // REACTIVE ROUTE RECALCULATION when currentLoc or masterEvents change
   useEffect(() => {
@@ -1343,6 +1343,11 @@ export default function Dashboard() {
   };
 
   const handleSaveEvent = async () => {
+    if (!authUser || !supabase) {
+      alert("Effettua il login per salvare e sincronizzare i tuoi impegni.");
+      return;
+    }
+
     if (!newEventTitle.trim() || !newEventTime || !newEventDate) {
       return alert("Compila titolo, data e orario!");
     }
@@ -1431,14 +1436,16 @@ export default function Dashboard() {
               travel_time_mins: updatedEventData.travelTimeMins,
             })
             .eq("id", editingEventId)
-            .eq("user_id", authUser.id);
+            .eq("user_id", authUser.id)
+            .select();
             
           if (error) {
             console.error("Supabase update error:", error);
-            // Fallback is already local state!
+            alert("Errore salvataggio cloud: " + error.message);
           }
-        } catch (e) {
-          console.warn("Supabase update error:", e);
+        } catch (e: any) {
+          console.error("Supabase update error:", e);
+          alert("Errore salvataggio cloud: " + e.message);
         }
       }
     } else {
@@ -1479,13 +1486,14 @@ export default function Dashboard() {
             status: newEvData.status,
             travel_time_mins: newEvData.travelTimeMins,
             transport_mode: newEvData.transportMode,
-          }]);
+          }]).select();
           if (error) {
              console.error("Supabase insert error:", error);
-             // The optimistic UI remains intact.
+             alert("Errore salvataggio cloud: " + error.message);
           }
-        } catch (e) {
-          console.warn("Supabase insert error:", e);
+        } catch (e: any) {
+          console.error("Supabase insert error:", e);
+          alert("Errore salvataggio cloud: " + e.message);
         }
       }
     }
@@ -1806,7 +1814,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-2.5">
             {authUser && (
               <button
-                onClick={() => fetchUserEvents()}
+                onClick={() => loadUserEvents()}
                 className="w-9 h-9 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-100 transition-colors"
                 title="Sincronizza Cloud"
               >
