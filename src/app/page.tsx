@@ -2342,13 +2342,22 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                {/* MAPS ACTION BUTTON */}
-                <button
-                  onClick={() => setMapsTargetEvent(activeEvent)}
-                  className="w-full bg-[#007AFF] text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-[#007AFF]/90 active:scale-[0.98] transition-all"
-                >
-                  <Navigation2 className="w-4 h-4" /> Apri Mappe
-                </button>
+                {/* MAPS & COMPLETE ACTION BUTTONS */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button
+                    onClick={() => setMapsTargetEvent(activeEvent)}
+                    className="flex-1 bg-[#007AFF] text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-[#007AFF]/90 active:scale-[0.98] transition-all"
+                  >
+                    <Navigation2 className="w-4 h-4" /> Apri Mappe
+                  </button>
+                  
+                  <button
+                    onClick={() => completeEvent(activeEvent.id)}
+                    className="flex-1 bg-emerald-500 text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-emerald-600 active:scale-[0.98] transition-all"
+                  >
+                    <CheckCircle2 className="w-5 h-5" /> Completato
+                  </button>
+                </div>
               </div>
             );
           })()}
