@@ -2788,33 +2788,33 @@ export default function Dashboard() {
               </p>
 
               <div className="flex flex-col gap-3">
-                <button
-                  onClick={() => {
-                    window.open(gmapsUrl, '_system');
-                    setMapsTargetEvent(null);
-                  }}
-                  className="w-full py-4 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all"
+                <a
+                  href={gmapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setMapsTargetEvent(null)}
+                  className="w-full py-4 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all block"
                 >
                   <div className="flex items-center gap-3">
                     <Map className="w-5 h-5" />
                     <span>Google Maps</span>
                   </div>
                   <ExternalLink className="w-4 h-4 opacity-70" />
-                </button>
+                </a>
 
-                <button
-                  onClick={() => {
-                    window.open(amapsUrl, '_system');
-                    setMapsTargetEvent(null);
-                  }}
-                  className="w-full py-4 px-5 bg-slate-900 hover:bg-slate-800 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all"
+                <a
+                  href={amapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setMapsTargetEvent(null)}
+                  className="w-full py-4 px-5 bg-slate-900 hover:bg-slate-800 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all block"
                 >
                   <div className="flex items-center gap-3">
                     <Navigation2 className="w-5 h-5" />
                     <span>Apple Maps</span>
                   </div>
                   <ExternalLink className="w-4 h-4 opacity-70" />
-                </button>
+                </a>
               </div>
 
               <div className="h-4 sm:h-0" />
@@ -3492,17 +3492,11 @@ export default function Dashboard() {
                     ))}
 
                     {/* INSTANT GOOGLE MAPS QUERY BRIDGE */}
-                    <button
-                      type="button"
-                      className="w-full text-left px-4 py-2.5 bg-blue-50/60 hover:bg-blue-100/60 border-t border-slate-100 transition-colors flex items-center justify-between text-xs text-blue-700"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        window.open(
-                          `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressQuery)}`,
-                          "_system"
-                        );
-                      }}
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressQuery)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full text-left px-4 py-2.5 bg-blue-50/60 hover:bg-blue-100/60 border-t border-slate-100 transition-colors flex items-center justify-between text-xs text-blue-700 block"
                     >
                       <span className="flex items-center gap-2 font-medium truncate pr-2">
                         <ExternalLink className="w-3.5 h-3.5 text-blue-600 shrink-0" />
@@ -3513,7 +3507,7 @@ export default function Dashboard() {
                       <span className="text-[10px] text-blue-600 font-bold uppercase tracking-wider shrink-0">
                         Verifica ↗
                       </span>
-                    </button>
+                    </a>
 
                     {/* MANUAL FALLBACK OPTION - Usa questo nome */}
                     <button
