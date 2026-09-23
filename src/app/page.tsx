@@ -227,6 +227,9 @@ export default function Dashboard() {
   const [selectedDest, setSelectedDest] = useState<{ lat: number; lon: number; name: string } | null>(null);
   const [isSearchingAddress, setIsSearchingAddress] = useState(false);
 
+  // "Partenza da" selector state: null = use live GPS, string = bookmark id
+  const [originBookmarkId, setOriginBookmarkId] = useState<string | null>(null);
+
   // Ref for GPS Watch ID
   const watchIdRef = useRef<number | null>(null);
 
@@ -319,7 +322,7 @@ export default function Dashboard() {
     // 1. Primary Engine: Mapbox Geocoding Places API for POIs with proximity bias
     if (activeMapboxToken) {
       try {
-        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,neighborhood&language=it&limit=6`;
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,poi.landmark&language=it&limit=8`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -758,6 +761,7 @@ export default function Dashboard() {
   // LocalStorage caching is removed in favor of Supabase as single source of truth
 
   // REACTIVE ROUTE RECALCULATION when currentLoc or masterEvents change
+  // Only recalculates events where origin_coords is null (= "live GPS" mode)
   useEffect(() => {
     if (!currentLoc || masterEvents.length === 0 || !isMounted) return;
 
@@ -766,6 +770,10 @@ export default function Dashboard() {
       const newEvents = await Promise.all(
         masterEvents.map(async (ev) => {
           if (ev.status !== "active" || !ev.destinationCoords?.lat || !ev.destinationCoords?.lon) return ev;
+          
+          // If the event has a fixed origin (e.g. "Casa"), don't override with current GPS
+          if ((ev as any).originCoords) return ev;
+          
           try {
             const newMins = await fetchOsrmRouteMins(currentLoc, ev.destinationCoords, ev.transportMode || "driving", mapboxToken);
             if (newMins !== ev.travelTimeMins) {
@@ -1131,6 +1139,7 @@ export default function Dashboard() {
     setNewEventBuffer(ev.bufferMinutes);
     setNewEventChecklist(ev.checklist || []);
     setNewEventTransportMode(ev.transportMode || "driving");
+    setOriginBookmarkId(null); // reset to live GPS on edit
     setIsFabOpen(true);
   };
 
@@ -1384,11 +1393,17 @@ export default function Dashboard() {
       }
     }
 
-    // Auto-calculate travel time
+    // Determine origin: fixed bookmark coords or live GPS
+    const originBookmark = originBookmarkId ? savedPlaces.find(p => p.id === originBookmarkId) : null;
+    const originCoords = originBookmark ? originBookmark.coords : currentLoc;
+    // null origin_coords stored in DB means "always recalculate from live GPS on device"
+    const originCoordsForDB = originBookmark ? originBookmark.coords : null;
+
+    // Auto-calculate travel time from origin
     let finalTravelTime = 10;
-    if (currentLoc && destCoords) {
+    if (originCoords && destCoords) {
       finalTravelTime = await fetchOsrmRouteMins(
-        currentLoc,
+        originCoords,
         destCoords,
         newEventTransportMode,
         mapboxToken
@@ -1479,6 +1494,7 @@ export default function Dashboard() {
             target_time: newEvData.targetTime,
             destination_name: newEvData.destinationName,
             destination_coords: newEvData.destinationCoords,
+            origin_coords: originCoordsForDB, // null = always use live GPS on device
             buffer_minutes: newEvData.bufferMinutes,
             checklist: newEvData.checklist,
             status: newEvData.status,
@@ -1508,6 +1524,7 @@ export default function Dashboard() {
       setDateTab("tutti");
     }
 
+    setOriginBookmarkId(null);
     setEditingEventId(null);
     setNewEventTitle("");
     setAddressQuery("");
@@ -3098,6 +3115,55 @@ export default function Dashboard() {
                     <Bike className="w-3.5 h-3.5" /> Bici / Moto
                   </button>
                 </div>
+              </div>
+
+              {/* PARTENZA DA */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">
+                  Partenza Da
+                </label>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none [&::-webkit-scrollbar]:hidden">
+                  {/* Live GPS chip */}
+                  <button
+                    type="button"
+                    onClick={() => setOriginBookmarkId(null)}
+                    className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 shrink-0 border transition-all ${
+                      originBookmarkId === null
+                        ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                        : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
+                    }`}
+                  >
+                    <span>📍</span>
+                    <span>Posizione Attuale</span>
+                  </button>
+
+                  {/* Bookmark chips */}
+                  {savedPlaces.map((place) => (
+                    <button
+                      key={place.id}
+                      type="button"
+                      onClick={() => setOriginBookmarkId(place.id === originBookmarkId ? null : place.id)}
+                      className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 shrink-0 border transition-all ${
+                        originBookmarkId === place.id
+                          ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                          : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
+                      }`}
+                    >
+                      <span>{place.icon}</span>
+                      <span>{place.name}</span>
+                    </button>
+                  ))}
+                </div>
+                {originBookmarkId && (
+                  <p className="text-[10px] text-slate-400 mt-1 ml-1">
+                    Il tempo di viaggio sarà calcolato da questa posizione fissa.
+                  </p>
+                )}
+                {!originBookmarkId && (
+                  <p className="text-[10px] text-slate-400 mt-1 ml-1">
+                    Il tempo di viaggio sarà aggiornato in tempo reale dal GPS del tuo dispositivo.
+                  </p>
+                )}
               </div>
 
               {/* Address Autocomplete & Saved Bookmarks Bar */}
