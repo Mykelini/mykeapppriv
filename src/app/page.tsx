@@ -388,12 +388,14 @@ export default function Dashboard() {
           results = await queryMapbox(fallbackQuery, false);
         }
 
-        return results;
+        if (results.length > 0) {
+          return results;
+        } else {
+          console.log("Mapbox commercial POI search returned 0 results, falling through to Nominatim open amenity search...");
+        }
       } catch (err) {
         console.warn("Mapbox Places POI search error:", err);
       }
-      // If Mapbox token is present, we NEVER fall back to Nominatim/Photon
-      return [];
     }
 
     // 2. Fallback Engine ONLY if Mapbox token is missing
@@ -402,9 +404,8 @@ export default function Dashboard() {
       if (currentCity && !query.toLowerCase().includes(currentCity.toLowerCase().split(",")[0])) {
         nominatimQuery = `${query}, ${currentCity.split(",")[0]}`;
       }
-      const viewbox = `${lon - 0.5},${lat + 0.5},${lon + 0.5},${lat - 0.5}`;
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(nominatimQuery)}&countrycodes=it&limit=6&addressdetails=1&viewbox=${viewbox}&bounded=0`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(nominatimQuery)}&countrycodes=it&limit=6&addressdetails=1`
       );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -432,6 +433,36 @@ export default function Dashboard() {
 
   const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
     return searchPlaces(query);
+  };
+
+  const handleSmartPaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const regexAt = /@(-?\d+\.\d+),(-?\d+\.\d+)/;
+      const regexQ = /[?&]q=(-?\d+\.\d+)[,%](-?\d+\.\d+)/;
+      let lat = null, lon = null;
+      const matchAt = text.match(regexAt);
+      if (matchAt) { lat = parseFloat(matchAt[1]); lon = parseFloat(matchAt[2]); }
+      else {
+        const matchQ = text.match(regexQ);
+        if (matchQ) { lat = parseFloat(matchQ[1]); lon = parseFloat(matchQ[2]); }
+      }
+      if (lat !== null && lon !== null) {
+        setAddressQuery("Posizione da link incollato");
+        setSelectedDest({ lat, lon, name: "Posizione da link incollato" });
+        setAddressSuggestions([]);
+      } else {
+        setAddressQuery(text);
+        setSelectedDest(null);
+        setIsSearchingAddress(true);
+        const results = await fetchSuggestions(text);
+        setAddressSuggestions(results);
+        setIsSearchingAddress(false);
+      }
+    } catch (e) {
+      alert("Permesso per gli appunti negato o impossibile incollare.");
+    }
   };
 
   // Reverse Geocode Locality (Photon)
@@ -1693,24 +1724,27 @@ export default function Dashboard() {
     const departureTime = addMinutes(startDateTime, -(travelMins + ev.bufferMinutes));
     const minsToDeparture = differenceInMinutes(departureTime, now);
 
-    let style = "bg-slate-500/10 text-slate-600 border border-slate-500/20";
+    let style = "bg-slate-50 text-slate-700 border-slate-200"; // default >30 min
     let text = isCalculating ? "Calcolo percorso..." : `Esci tra ${minsToDeparture} min`;
     let barColor = isCalculating ? "bg-slate-200" : "bg-slate-300";
 
     const isLate = now > departureTime;
 
     if (!isCalculating) {
-      if (isLate) {
+      if (isLate || minsToDeparture <= 0) {
         const lateMins = differenceInMinutes(now, departureTime);
-        style = "bg-red-500/10 text-red-600 border border-red-500/20";
-        text = `SEI IN RITARDO DI ${lateMins} MIN`;
+        style = "bg-red-50 text-red-700 border-red-200 animate-pulse";
+        text = isLate ? `SEI IN RITARDO DI ${lateMins} MIN` : "Parti subito!";
         barColor = "bg-red-500 animate-pulse";
-      } else if (minsToDeparture < 10) {
-        style = "bg-red-500/10 text-red-600 border border-red-500/20";
-        barColor = "bg-red-500";
-      } else if (minsToDeparture <= 20) {
-        style = "bg-amber-500/10 text-amber-600 border border-amber-500/20";
+      } else if (minsToDeparture <= 10) {
+        style = "bg-orange-50 text-orange-700 border-orange-200";
+        barColor = "bg-orange-500";
+      } else if (minsToDeparture <= 30) {
+        style = "bg-amber-50 text-amber-700 border-amber-200";
         barColor = "bg-amber-400";
+      } else {
+        style = "bg-blue-50 text-blue-700 border-blue-200";
+        barColor = "bg-blue-400";
       }
     } else {
       // Styling for calculating mode
@@ -1730,8 +1764,33 @@ export default function Dashboard() {
     return { style, text, departureTime, barColor, progress, isLate, isCalculating };
   };
 
+  const delayEvent15m = async (event: MasterEvent) => {
+    try {
+      const [hours, minutes] = event.targetTime.split(':').map(Number);
+      const dateObj = new Date();
+      dateObj.setHours(hours, minutes, 0, 0);
+      const newDateObj = addMinutes(dateObj, 15);
+      const newTime = format(newDateObj, 'HH:mm');
+      
+      setMasterEvents(prev => prev.map(e => e.id === event.id ? { ...e, targetTime: newTime } : e));
+      
+      if (supabase) {
+        await supabase.from('events').update({ target_time: newTime }).eq('id', event.id);
+      }
+    } catch (e) {
+      console.error("Failed to delay event", e);
+    }
+  };
+
   const renderCardActionButtons = (event: MasterEvent) => (
     <div className="flex items-center gap-1.5 shrink-0 ml-2">
+      <button
+        onClick={() => delayEvent15m(event)}
+        className="w-8 h-8 rounded-[10px] flex items-center justify-center bg-gray-50 hover:bg-indigo-50 text-gray-500 hover:text-indigo-600 transition-colors border border-slate-200 shadow-sm font-bold text-[10px]"
+        title="Posticipa di 15 min"
+      >
+        +15m
+      </button>
       <button
         onClick={() => startEditingEvent(event)}
         className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition-colors"
@@ -3477,9 +3536,14 @@ export default function Dashboard() {
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">
                     Destinazione
                   </label>
-                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
-                    Segnaposti Rapidi
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <button type="button" onClick={handleSmartPaste} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-[6px] border border-indigo-100 flex items-center gap-1 hover:bg-indigo-100 transition-colors">
+                      📋 Incolla Link
+                    </button>
+                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
+                      Segnaposti Rapidi
+                    </span>
+                  </div>
                 </div>
 
                 {/* SAVED PLACES / BOOKMARKS CHIPS BAR FROM SETTINGS */}
