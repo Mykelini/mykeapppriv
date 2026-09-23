@@ -323,21 +323,35 @@ export default function Dashboard() {
     return "📍";
   };
 
-  // Unified POI & Address Search Engine (Mapbox Places POI + Nominatim Fallback)
+  // Unified POI & Address Search Engine (Strict Mapbox API)
   const searchPlaces = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
     if (!currentLoc) return [];
     const lat = currentLoc.lat;
     const lon = currentLoc.lon;
-    const activeMapboxToken = mapboxToken || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
+    const activeMapboxToken = mapboxToken || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || "";
+
+    console.log("OnTime Search Engine: Mapbox Token Present?", Boolean(activeMapboxToken));
 
     // 1. Primary Engine: Mapbox Geocoding Places API
     if (activeMapboxToken) {
       try {
-        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,poi.landmark&fuzzyMatch=true&limit=8&language=it`;
-        const res = await fetch(url);
-        if (res.ok) {
+        const queryMapbox = async (q: string, withTypes: boolean) => {
+          const params = new URLSearchParams({
+            access_token: activeMapboxToken,
+            country: 'it',
+            proximity: `${lon},${lat}`,
+            fuzzyMatch: 'true',
+            language: 'it',
+            limit: '8'
+          });
+          if (withTypes) {
+            params.append('types', 'poi,address,neighborhood,place,locality');
+          }
+          const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?${params.toString()}`;
+          const res = await fetch(url);
+          if (!res.ok) return [];
           const data = await res.json();
           if (data.features && data.features.length > 0) {
             return data.features.map((f: any) => {
@@ -359,16 +373,38 @@ export default function Dashboard() {
               };
             });
           }
+          return [];
+        };
+
+        let results = await queryMapbox(query, true);
+        
+        // Sub-query fallback if 0 results
+        if (results.length === 0) {
+          console.log("Mapbox returned 0 results, executing fallback sub-query...");
+          let fallbackQuery = query;
+          if (currentCity && !query.toLowerCase().includes(currentCity.toLowerCase().split(",")[0])) {
+             fallbackQuery = `${query} ${currentCity}`;
+          }
+          results = await queryMapbox(fallbackQuery, false);
         }
+
+        return results;
       } catch (err) {
-        console.warn("Mapbox Places POI search error, falling back:", err);
+        console.warn("Mapbox Places POI search error:", err);
       }
+      // If Mapbox token is present, we NEVER fall back to Nominatim/Photon
+      return [];
     }
 
-    // 2. Fallback Engine: Nominatim API bounded search
+    // 2. Fallback Engine ONLY if Mapbox token is missing
     try {
+      let nominatimQuery = query;
+      if (currentCity && !query.toLowerCase().includes(currentCity.toLowerCase().split(",")[0])) {
+        nominatimQuery = `${query}, ${currentCity.split(",")[0]}`;
+      }
+      const viewbox = `${lon - 0.5},${lat + 0.5},${lon + 0.5},${lat - 0.5}`;
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&addressdetails=1&limit=6`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(nominatimQuery)}&countrycodes=it&limit=6&addressdetails=1&viewbox=${viewbox}&bounded=0`
       );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -3023,8 +3059,8 @@ export default function Dashboard() {
                         key={i}
                         className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-2.5"
                         onClick={() => {
-                          setNewBookmarkAddressQuery(s.fullName);
-                          setSelectedBookmarkCoords({ lat: s.lat, lon: s.lon, name: s.fullName });
+                          setNewBookmarkAddressQuery(s.name);
+                          setSelectedBookmarkCoords({ lat: s.lat, lon: s.lon, name: s.name });
                           setNewBookmarkSuggestions([]);
                         }}
                       >
@@ -3325,8 +3361,8 @@ export default function Dashboard() {
                             key={i}
                             onClick={() => {
                               setOriginCustomCoords({ lat: sug.lat, lon: sug.lon });
-                              setOriginCustomAddress(sug.fullName);
-                              setOriginCustomQuery(sug.fullName);
+                              setOriginCustomAddress(sug.name);
+                              setOriginCustomQuery(sug.name);
                               setOriginSuggestions([]);
                             }}
                             className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
@@ -3471,8 +3507,8 @@ export default function Dashboard() {
                         key={i}
                         className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-3"
                         onClick={() => {
-                          setAddressQuery(s.fullName);
-                          setSelectedDest({ lat: s.lat, lon: s.lon, name: s.fullName });
+                          setAddressQuery(s.name);
+                          setSelectedDest({ lat: s.lat, lon: s.lon, name: s.name });
                           setAddressSuggestions([]);
                         }}
                       >
