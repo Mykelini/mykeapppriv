@@ -561,9 +561,13 @@ export default function Dashboard() {
           date: row.date || format(new Date(), "yyyy-MM-dd"),
           targetTime: row.target_time,
           destinationName: row.destination_name || "",
-          destinationCoords: row.destination_coords,
+          destinationCoords: Array.isArray(row.destination_coords) 
+            ? { lat: row.destination_coords[1] || row.destination_coords[0], lon: row.destination_coords[0] } 
+            : row.destination_coords,
           origin_type: row.origin_type || 'live',
-          origin_coords: row.origin_coords || null,
+          origin_coords: Array.isArray(row.origin_coords) 
+            ? { lat: row.origin_coords[1] || row.origin_coords[0], lon: row.origin_coords[0] } 
+            : row.origin_coords || null,
           origin_address: row.origin_address || null,
           bufferMinutes: row.buffer_minutes ?? 10,
           checklist: Array.isArray(row.checklist) ? row.checklist : [],
@@ -1478,20 +1482,15 @@ export default function Dashboard() {
 
     // Auto-Geocode typed address or POI venue if no dropdown item was explicitly clicked
     if (!destCoords && destName.length > 0) {
-      if (addressSuggestions.length > 0) {
-        destCoords = { lat: addressSuggestions[0].lat, lon: addressSuggestions[0].lon };
-        destName = addressSuggestions[0].fullName;
+      const geoResults = await fetchSuggestions(destName);
+      if (geoResults.length > 0) {
+        destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
+        destName = geoResults[0].name; // Clean place name
+      } else if (currentLoc) {
+        destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
       } else {
-        const geoResults = await fetchSuggestions(destName);
-        if (geoResults.length > 0) {
-          destCoords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
-          destName = geoResults[0].fullName;
-        } else if (currentLoc) {
-          destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
-        } else {
-          // If no fallback possible, reject
-          return alert("Indirizzo non trovato.");
-        }
+        setIsSaving(false);
+        return alert("Indirizzo non trovato.");
       }
     }
 
@@ -2843,29 +2842,36 @@ export default function Dashboard() {
         const oLat = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lat : null;
         const oLon = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lon : null;
 
-        const dLat = mapsTargetEvent.destinationCoords?.lat;
-        const dLon = mapsTargetEvent.destinationCoords?.lon;
+        let dLat = mapsTargetEvent.destinationCoords?.lat;
+        let dLon = mapsTargetEvent.destinationCoords?.lon;
+        
+        // Failsafe array detection
+        if (Array.isArray(mapsTargetEvent.destinationCoords)) {
+           dLat = mapsTargetEvent.destinationCoords[1];
+           dLon = mapsTargetEvent.destinationCoords[0];
+        }
+
         const dName = encodeURIComponent(mapsTargetEvent.destinationName);
 
         // Google Maps URL
         let gmapsUrl = `https://www.google.com/maps/dir/?api=1&travelmode=${gmapMode}`;
-        if (dLat && dLon) {
+        if (dLat !== undefined && dLon !== undefined) {
           gmapsUrl += `&destination=${dLat},${dLon}`;
         } else {
           gmapsUrl += `&destination=${dName}`;
         }
-        if (hasCustomOrigin && oLat && oLon) {
+        if (hasCustomOrigin && oLat !== undefined && oLon !== undefined) {
           gmapsUrl += `&origin=${oLat},${oLon}`;
         }
 
         // Apple Maps URL
         let amapsUrl = `https://maps.apple.com/?dirflg=${amapMode}`;
-        if (dLat && dLon) {
+        if (dLat !== undefined && dLon !== undefined) {
           amapsUrl += `&daddr=${dLat},${dLon}`;
         } else {
           amapsUrl += `&daddr=${dName}`;
         }
-        if (hasCustomOrigin && oLat && oLon) {
+        if (hasCustomOrigin && oLat !== undefined && oLon !== undefined) {
           amapsUrl += `&saddr=${oLat},${oLon}`;
         }
 
