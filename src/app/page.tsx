@@ -30,6 +30,9 @@ type MasterEvent = {
   targetTime: string; // HH:mm
   destinationName: string;
   destinationCoords: { lat: number; lon: number };
+  origin_type?: 'live' | 'bookmark' | 'custom';
+  origin_coords?: { lat: number; lon: number } | null;
+  origin_address?: string | null;
   bufferMinutes: number;
   checklist: string[];
   status: EventStatus;
@@ -227,8 +230,18 @@ export default function Dashboard() {
   const [selectedDest, setSelectedDest] = useState<{ lat: number; lon: number; name: string } | null>(null);
   const [isSearchingAddress, setIsSearchingAddress] = useState(false);
 
-  // "Partenza da" selector state: null = use live GPS, string = bookmark id
+  // "Partenza da" selector state
+  const [originType, setOriginType] = useState<"live" | "bookmark" | "custom">("live");
   const [originBookmarkId, setOriginBookmarkId] = useState<string | null>(null);
+  const [originCustomQuery, setOriginCustomQuery] = useState("");
+  const [originCustomCoords, setOriginCustomCoords] = useState<{lat: number, lon: number} | null>(null);
+  const [originCustomAddress, setOriginCustomAddress] = useState<string | null>(null);
+  const [isOriginSearchOpen, setIsOriginSearchOpen] = useState(false);
+  const [originSuggestions, setOriginSuggestions] = useState<LocationSuggestion[]>([]);
+  const [isSearchingOrigin, setIsSearchingOrigin] = useState(false);
+
+  // Header refresh state
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Ref for GPS Watch ID
   const watchIdRef = useRef<number | null>(null);
@@ -310,8 +323,8 @@ export default function Dashboard() {
     return "📍";
   };
 
-  // Upgraded POI & Address Search Engine (Mapbox Places POI + Photon/Nominatim Fallback)
-  const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
+  // Unified POI & Address Search Engine (Mapbox Places POI + Nominatim Fallback)
+  const searchPlaces = async (query: string): Promise<LocationSuggestion[]> => {
     if (!query || query.trim().length < 2) return [];
 
     if (!currentLoc) return [];
@@ -319,10 +332,10 @@ export default function Dashboard() {
     const lon = currentLoc.lon;
     const activeMapboxToken = mapboxToken || process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
-    // 1. Primary Engine: Mapbox Geocoding Places API for POIs with proximity bias
+    // 1. Primary Engine: Mapbox Geocoding Places API
     if (activeMapboxToken) {
       try {
-        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,poi.landmark&language=it&limit=8`;
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(activeMapboxToken)}&country=it&proximity=${lon},${lat}&types=poi,address,place&limit=6&language=it`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -348,50 +361,14 @@ export default function Dashboard() {
           }
         }
       } catch (err) {
-        console.warn("Mapbox Places POI search error, falling back to Photon:", err);
+        console.warn("Mapbox Places POI search error, falling back:", err);
       }
     }
 
-    // 2. Smart Fallback POI Engine: Photon API with Proximity Biasing & POI tagging
+    // 2. Fallback Engine: Nominatim API bounded search
     try {
       const res = await fetch(
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lon}&limit=8&lang=it`
-      );
-      const data = await res.json();
-      if (data.features && data.features.length > 0) {
-        return data.features.map((f: any) => {
-          const props = f.properties;
-          const mainName = props.name || props.street || query;
-          const secondary = [
-            props.street && props.name !== props.street ? `${props.street} ${props.housenumber || ""}`.trim() : null,
-            props.district || props.suburb,
-            props.city || props.town || props.village,
-            props.state
-          ].filter(Boolean).join(", ");
-
-          const category = `${props.osm_key || ""} ${props.osm_value || ""}`;
-          const icon = getPoiIcon(mainName, category);
-
-          return {
-            name: mainName,
-            secondary,
-            fullName: secondary ? `${mainName}, ${secondary}` : mainName,
-            lat: f.geometry.coordinates[1],
-            lon: f.geometry.coordinates[0],
-            icon,
-            category,
-          };
-        });
-      }
-    } catch (e) {
-      console.warn("Photon autocomplete failed, trying local fallback", e);
-    }
-
-    // 3. Last Fallback: Nominatim API with countrycodes=it & addressdetails
-    try {
-      const viewbox = `${lon - 0.25},${lat - 0.25},${lon + 0.25},${lat + 0.25}`;
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&viewbox=${viewbox}&bounded=0&addressdetails=1&limit=8`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=it&limit=6`
       );
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -415,6 +392,10 @@ export default function Dashboard() {
     }
 
     return [];
+  };
+
+  const fetchSuggestions = async (query: string): Promise<LocationSuggestion[]> => {
+    return searchPlaces(query);
   };
 
   // Reverse Geocode Locality (Photon)
@@ -545,11 +526,14 @@ export default function Dashboard() {
           targetTime: row.target_time,
           destinationName: row.destination_name || "",
           destinationCoords: row.destination_coords,
+          origin_type: row.origin_type || 'live',
+          origin_coords: row.origin_coords || null,
+          origin_address: row.origin_address || null,
           bufferMinutes: row.buffer_minutes ?? 10,
           checklist: Array.isArray(row.checklist) ? row.checklist : [],
           status: row.status as EventStatus,
           completedAt: row.completed_at || undefined,
-          travelTimeMins: row.travel_time_mins || 10,
+          travelTimeMins: row.travel_time_mins ?? undefined,
           transportMode: (row.transport_mode as TransportMode) || "driving",
         }));
         setMasterEvents(synced);
@@ -1393,17 +1377,28 @@ export default function Dashboard() {
       }
     }
 
-    // Determine origin: fixed bookmark coords or live GPS
-    const originBookmark = originBookmarkId ? savedPlaces.find(p => p.id === originBookmarkId) : null;
-    const originCoords = originBookmark ? originBookmark.coords : currentLoc;
-    // null origin_coords stored in DB means "always recalculate from live GPS on device"
-    const originCoordsForDB = originBookmark ? originBookmark.coords : null;
+    // Determine origin: live, bookmark, or custom
+    let originCoordsForDB: {lat: number, lon: number} | null = null;
+    let originAddrForDB: string | null = null;
+    let originCoordsToUse = currentLoc;
 
-    // Auto-calculate travel time from origin
-    let finalTravelTime = 10;
-    if (originCoords && destCoords) {
+    if (originType === "bookmark" && originBookmarkId) {
+      const bkm = savedPlaces.find(p => p.id === originBookmarkId);
+      if (bkm) {
+        originCoordsForDB = bkm.coords;
+        originCoordsToUse = bkm.coords;
+      }
+    } else if (originType === "custom" && originCustomCoords) {
+      originCoordsForDB = originCustomCoords;
+      originAddrForDB = originCustomAddress;
+      originCoordsToUse = originCustomCoords;
+    }
+
+    // Auto-calculate travel time from origin if fixed, otherwise leave null to force recalculation on device
+    let finalTravelTime: number | null = null;
+    if (originType !== "live" && originCoordsToUse && destCoords) {
       finalTravelTime = await fetchOsrmRouteMins(
-        originCoords,
+        originCoordsToUse,
         destCoords,
         newEventTransportMode,
         mapboxToken
@@ -1411,24 +1406,27 @@ export default function Dashboard() {
     }
 
     if (editingEventId) {
-      const updatedEventData = {
+      const updatedEventData: Partial<MasterEvent> = {
         title: newEventTitle.trim(),
         category: newEventCategory,
         date: newEventDate,
         targetTime: newEventTime,
         destinationName: destName,
         destinationCoords: destCoords,
+        origin_type: originType,
+        origin_coords: originCoordsForDB,
+        origin_address: originAddrForDB,
         bufferMinutes: newEventBuffer,
         checklist: newEventChecklist,
         transportMode: newEventTransportMode,
-        travelTimeMins: finalTravelTime,
+        travelTimeMins: finalTravelTime !== null ? finalTravelTime : undefined,
       };
 
       // 1. Optimistic UI update
       setMasterEvents((prev) =>
         prev.map((e) =>
           e.id === editingEventId
-            ? { ...e, ...updatedEventData }
+            ? { ...e, ...updatedEventData, travelTimeMins: finalTravelTime !== null ? finalTravelTime : e.travelTimeMins }
             : e
         )
       );
@@ -1444,6 +1442,9 @@ export default function Dashboard() {
               target_time: updatedEventData.targetTime,
               destination_name: updatedEventData.destinationName,
               destination_coords: updatedEventData.destinationCoords,
+              origin_type: originType,
+              origin_coords: originCoordsForDB,
+              origin_address: originAddrForDB,
               buffer_minutes: updatedEventData.bufferMinutes,
               checklist: updatedEventData.checklist,
               transport_mode: updatedEventData.transportMode,
@@ -1470,10 +1471,13 @@ export default function Dashboard() {
         targetTime: newEventTime,
         destinationName: destName,
         destinationCoords: destCoords,
+        origin_type: originType,
+        origin_coords: originCoordsForDB,
+        origin_address: originAddrForDB,
         bufferMinutes: newEventBuffer,
         checklist: newEventChecklist,
         status: "active" as EventStatus,
-        travelTimeMins: finalTravelTime,
+        travelTimeMins: finalTravelTime !== null ? finalTravelTime : undefined,
         transportMode: newEventTransportMode,
       };
 
@@ -1494,7 +1498,9 @@ export default function Dashboard() {
             target_time: newEvData.targetTime,
             destination_name: newEvData.destinationName,
             destination_coords: newEvData.destinationCoords,
-            origin_coords: originCoordsForDB, // null = always use live GPS on device
+            origin_type: newEvData.origin_type,
+            origin_coords: newEvData.origin_coords,
+            origin_address: newEvData.origin_address,
             buffer_minutes: newEvData.bufferMinutes,
             checklist: newEvData.checklist,
             status: newEvData.status,
@@ -1564,39 +1570,49 @@ export default function Dashboard() {
   };
 
   const renderBadgeInfo = (ev: MasterEvent) => {
+    const isLive = ev.origin_type === 'live' || !ev.origin_coords;
+    const isCalculating = isLive && ev.travelTimeMins === undefined;
+
     const startDateTime = getEventDateTime(ev);
     const travelMins = ev.travelTimeMins || 10;
     const departureTime = addMinutes(startDateTime, -(travelMins + ev.bufferMinutes));
     const minsToDeparture = differenceInMinutes(departureTime, now);
 
     let style = "bg-slate-500/10 text-slate-600 border border-slate-500/20";
-    let text = `Esci tra ${minsToDeparture} min`;
-    let barColor = "bg-slate-300";
+    let text = isCalculating ? "Calcolo percorso..." : `Esci tra ${minsToDeparture} min`;
+    let barColor = isCalculating ? "bg-slate-200" : "bg-slate-300";
 
     const isLate = now > departureTime;
 
-    if (isLate) {
-      const lateMins = differenceInMinutes(now, departureTime);
-      style = "bg-red-500/10 text-red-600 border border-red-500/20";
-      text = `SEI IN RITARDO DI ${lateMins} MIN`;
-      barColor = "bg-red-500 animate-pulse";
-    } else if (minsToDeparture < 10) {
-      style = "bg-red-500/10 text-red-600 border border-red-500/20";
-      barColor = "bg-red-500";
-    } else if (minsToDeparture <= 20) {
-      style = "bg-amber-500/10 text-amber-600 border border-amber-500/20";
-      barColor = "bg-amber-400";
+    if (!isCalculating) {
+      if (isLate) {
+        const lateMins = differenceInMinutes(now, departureTime);
+        style = "bg-red-500/10 text-red-600 border border-red-500/20";
+        text = `SEI IN RITARDO DI ${lateMins} MIN`;
+        barColor = "bg-red-500 animate-pulse";
+      } else if (minsToDeparture < 10) {
+        style = "bg-red-500/10 text-red-600 border border-red-500/20";
+        barColor = "bg-red-500";
+      } else if (minsToDeparture <= 20) {
+        style = "bg-amber-500/10 text-amber-600 border border-amber-500/20";
+        barColor = "bg-amber-400";
+      }
+    } else {
+      // Styling for calculating mode
+      style = "bg-slate-200 text-slate-500 animate-pulse border-transparent";
     }
 
     const windowMins = 60;
     let progress = 0;
-    if (isLate) {
+    if (isCalculating) {
+      progress = 0;
+    } else if (isLate) {
       progress = 100;
     } else if (minsToDeparture < windowMins) {
       progress = ((windowMins - minsToDeparture) / windowMins) * 100;
     }
 
-    return { style, text, departureTime, barColor, progress, isLate };
+    return { style, text, departureTime, barColor, progress, isLate, isCalculating };
   };
 
   const renderCardActionButtons = (event: MasterEvent) => (
@@ -1815,25 +1831,30 @@ export default function Dashboard() {
     <main className="flex flex-col min-h-screen bg-[#F5F5F7] pb-24 relative overflow-x-hidden font-sans">
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
         {/* HEADER - DECLUTTERED APPLE STYLE */}
-        <header className="flex justify-between items-center px-6 py-5 pb-2">
+        <header className="w-full max-w-full px-4 py-3 flex items-center justify-between overflow-x-hidden">
           <div className="flex items-center gap-2.5 shrink-0">
-            <div className="relative w-8 h-8 rounded-[10px] overflow-hidden shadow-sm">
+            <div className="relative w-8 h-8 rounded-[10px] overflow-hidden shadow-sm shrink-0">
               <Image src="/logo.png" alt="OnTime Logo" fill className="object-cover" />
             </div>
-            <div className="flex items-center gap-1.5">
-              <h1 className="text-xl font-bold tracking-tight text-slate-900">OnTime</h1>
-              <Navigation2 className="w-3.5 h-3.5 text-blue-600 fill-blue-600" />
+            <div className="flex items-center gap-1.5 shrink-0">
+              <h1 className="text-xl font-bold tracking-tight text-slate-900 hidden sm:block">OnTime</h1>
+              <Navigation2 className="w-3.5 h-3.5 text-blue-600 fill-blue-600 hidden sm:block" />
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 shrink-0">
             {authUser && (
               <button
-                onClick={() => loadUserEvents()}
-                className="w-9 h-9 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-100 transition-colors"
+                onClick={async () => {
+                  setIsRefreshing(true);
+                  if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(20);
+                  await loadUserEvents();
+                  setTimeout(() => setIsRefreshing(false), 700);
+                }}
+                className="w-9 h-9 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-100 transition-colors shrink-0"
                 title="Sincronizza Cloud"
               >
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className={`w-4 h-4 transform transition-transform duration-700 ${isRefreshing ? 'rotate-180' : ''}`} />
               </button>
             )}
             
@@ -1843,7 +1864,7 @@ export default function Dashboard() {
                 setIsEditingBase(false);
                 setIsLocationModalOpen(true);
               }}
-              className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all border shadow-sm ${
+              className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all border shadow-sm min-w-0 flex-1 max-w-[150px] sm:max-w-[200px] truncate mx-1 ${
                 locationMode === "gps"
                   ? "bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
                   : "bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200/80"
@@ -1856,7 +1877,7 @@ export default function Dashboard() {
               ) : (
                 <Home className="w-3.5 h-3.5 text-slate-500 shrink-0" />
               )}
-              <span className="text-xs font-semibold uppercase tracking-wider truncate max-w-[130px] sm:max-w-none text-right">
+              <span className="text-xs font-semibold uppercase tracking-wider truncate text-right">
                 {formatPillCity(currentCity)}
               </span>
             </button>
@@ -2270,11 +2291,17 @@ export default function Dashboard() {
                   </div>
 
                   <div className="flex items-center justify-between text-[13px] font-medium text-slate-600">
-                    <span>
-                      Tragitto: <span className="font-bold text-slate-800">~{nextEvent.travelTimeMins || 10} min</span> (Cuscinetto: +{nextEvent.bufferMinutes} min)
+                    <span className="flex items-center gap-1">
+                      Tragitto: 
+                      {badgeInfo.isCalculating ? (
+                        <div className="w-10 h-4 bg-slate-200 rounded animate-pulse inline-block" />
+                      ) : (
+                        <span className="font-bold text-slate-800">~{nextEvent.travelTimeMins || 10} min</span>
+                      )}
+                      (Cuscinetto: +{nextEvent.bufferMinutes} min)
                     </span>
                     <span className="font-bold text-slate-900">
-                      Uscita: {format(badgeInfo.departureTime, "HH:mm")}
+                      Uscita: {badgeInfo.isCalculating ? "--:--" : format(badgeInfo.departureTime, "HH:mm")}
                     </span>
                   </div>
                 </div>
@@ -3126,9 +3153,9 @@ export default function Dashboard() {
                   {/* Live GPS chip */}
                   <button
                     type="button"
-                    onClick={() => setOriginBookmarkId(null)}
+                    onClick={() => { setOriginType("live"); setOriginBookmarkId(null); setIsOriginSearchOpen(false); }}
                     className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 shrink-0 border transition-all ${
-                      originBookmarkId === null
+                      originType === "live"
                         ? "bg-blue-600 text-white border-blue-600 shadow-sm"
                         : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
                     }`}
@@ -3142,9 +3169,9 @@ export default function Dashboard() {
                     <button
                       key={place.id}
                       type="button"
-                      onClick={() => setOriginBookmarkId(place.id === originBookmarkId ? null : place.id)}
+                      onClick={() => { setOriginType("bookmark"); setOriginBookmarkId(place.id); setIsOriginSearchOpen(false); }}
                       className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 shrink-0 border transition-all ${
-                        originBookmarkId === place.id
+                        originType === "bookmark" && originBookmarkId === place.id
                           ? "bg-blue-600 text-white border-blue-600 shadow-sm"
                           : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
                       }`}
@@ -3153,13 +3180,96 @@ export default function Dashboard() {
                       <span>{place.name}</span>
                     </button>
                   ))}
+                  
+                  {/* Custom Address chip */}
+                  <button
+                    type="button"
+                    onClick={() => { 
+                      setOriginType("custom"); 
+                      setOriginBookmarkId(null); 
+                      setIsOriginSearchOpen(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-[12px] text-xs font-semibold flex items-center gap-1.5 shrink-0 border transition-all ${
+                      originType === "custom"
+                        ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                        : "bg-[#F5F5F7] text-slate-700 border-slate-200/80 hover:bg-slate-200/60"
+                    }`}
+                  >
+                    <span>✏️</span>
+                    <span>Altro Indirizzo</span>
+                  </button>
                 </div>
-                {originBookmarkId && (
+                
+                {/* Custom Address Input (only visible when Altro Indirizzo is selected) */}
+                {originType === "custom" && isOriginSearchOpen && (
+                  <div className="mt-2 relative">
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <MapPin className="w-4 h-4 text-slate-400" />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Cerca via, locale o città..."
+                        value={originCustomQuery}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setOriginCustomQuery(val);
+                          setOriginCustomCoords(null);
+                          setOriginCustomAddress(null);
+                          if (val.length > 2) {
+                            setIsSearchingOrigin(true);
+                            const results = await searchPlaces(val);
+                            setOriginSuggestions(results);
+                            setIsSearchingOrigin(false);
+                          } else {
+                            setOriginSuggestions([]);
+                          }
+                        }}
+                        className="w-full pl-9 pr-10 py-3 bg-[#F5F5F7] text-slate-900 border-0 rounded-[14px] text-sm focus:ring-2 focus:ring-blue-600 outline-none"
+                      />
+                      {isSearchingOrigin && (
+                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                          <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                        </div>
+                      )}
+                    </div>
+                    {/* Suggestions dropdown */}
+                    {originSuggestions.length > 0 && !originCustomCoords && (
+                      <div className="absolute z-[60] top-full left-0 right-0 mt-1 bg-white rounded-[14px] shadow-lg border border-slate-100 max-h-48 overflow-y-auto">
+                        {originSuggestions.map((sug, i) => (
+                          <div
+                            key={i}
+                            onClick={() => {
+                              setOriginCustomCoords({ lat: sug.lat, lon: sug.lon });
+                              setOriginCustomAddress(sug.fullName);
+                              setOriginCustomQuery(sug.fullName);
+                              setOriginSuggestions([]);
+                            }}
+                            className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
+                          >
+                            <span className="text-xl shrink-0 leading-none">{sug.icon || "📍"}</span>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-sm font-bold text-slate-900 truncate">{sug.name}</span>
+                              {sug.secondary && <span className="text-[11px] text-slate-500 truncate mt-0.5">{sug.secondary}</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {originType === "bookmark" && (
                   <p className="text-[10px] text-slate-400 mt-1 ml-1">
                     Il tempo di viaggio sarà calcolato da questa posizione fissa.
                   </p>
                 )}
-                {!originBookmarkId && (
+                {originType === "custom" && originCustomCoords && (
+                  <p className="text-[10px] text-green-600 mt-1 ml-1">
+                    Posizione impostata con successo.
+                  </p>
+                )}
+                {originType === "live" && (
                   <p className="text-[10px] text-slate-400 mt-1 ml-1">
                     Il tempo di viaggio sarà aggiornato in tempo reale dal GPS del tuo dispositivo.
                   </p>
