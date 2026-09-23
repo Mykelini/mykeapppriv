@@ -2741,7 +2741,38 @@ export default function Dashboard() {
       {mapsTargetEvent && (() => {
         const mode = mapsTargetEvent.transportMode || "driving";
         const gmapMode = mode === "walking" ? "walking" : mode === "cycling" ? "bicycling" : "driving";
-        const amapMode = mode === "walking" ? "w" : mode === "cycling" ? "r" : "d";
+        const amapMode = mode === "walking" ? "w" : mode === "cycling" ? "c" : "d";
+
+        const hasCustomOrigin = mapsTargetEvent.origin_type !== 'live' && !!mapsTargetEvent.origin_coords;
+        const oLat = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lat : null;
+        const oLon = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lon : null;
+
+        const dLat = mapsTargetEvent.destinationCoords?.lat;
+        const dLon = mapsTargetEvent.destinationCoords?.lon;
+        const dName = encodeURIComponent(mapsTargetEvent.destinationName);
+
+        // Google Maps URL
+        let gmapsUrl = `https://www.google.com/maps/dir/?api=1&travelmode=${gmapMode}`;
+        if (dLat && dLon) {
+          gmapsUrl += `&destination=${dLat},${dLon}`;
+        } else {
+          gmapsUrl += `&destination=${dName}`;
+        }
+        if (hasCustomOrigin && oLat && oLon) {
+          gmapsUrl += `&origin=${oLat},${oLon}`;
+        }
+
+        // Apple Maps URL
+        let amapsUrl = `https://maps.apple.com/?dirflg=${amapMode}`;
+        if (dLat && dLon) {
+          amapsUrl += `&daddr=${dLat},${dLon}`;
+        } else {
+          amapsUrl += `&daddr=${dName}`;
+        }
+        if (hasCustomOrigin && oLat && oLon) {
+          amapsUrl += `&saddr=${oLat},${oLon}`;
+        }
+
         return (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
             <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative">
@@ -2759,10 +2790,7 @@ export default function Dashboard() {
               <div className="flex flex-col gap-3">
                 <button
                   onClick={() => {
-                    const url = currentLoc && mapsTargetEvent.destinationCoords
-                      ? `https://www.google.com/maps/dir/?api=1&origin=${currentLoc.lat},${currentLoc.lon}&destination=${mapsTargetEvent.destinationCoords.lat},${mapsTargetEvent.destinationCoords.lon}&travelmode=${gmapMode}`
-                      : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsTargetEvent.destinationName)}&travelmode=${gmapMode}`;
-                    window.open(url, '_system');
+                    window.open(gmapsUrl, '_system');
                     setMapsTargetEvent(null);
                   }}
                   className="w-full py-4 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all"
@@ -2774,15 +2802,11 @@ export default function Dashboard() {
                   <ExternalLink className="w-4 h-4 opacity-70" />
                 </button>
 
-                <a
-                  href={
-                    mapsTargetEvent.destinationCoords
-                      ? `https://maps.apple.com/?daddr=${mapsTargetEvent.destinationCoords.lat},${mapsTargetEvent.destinationCoords.lon}&dirflg=${amapMode}`
-                      : `https://maps.apple.com/?q=${encodeURIComponent(mapsTargetEvent.destinationName)}`
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => setMapsTargetEvent(null)}
+                <button
+                  onClick={() => {
+                    window.open(amapsUrl, '_system');
+                    setMapsTargetEvent(null);
+                  }}
                   className="w-full py-4 px-5 bg-slate-900 hover:bg-slate-800 text-white rounded-[20px] font-bold text-sm flex items-center justify-between shadow-sm transition-all"
                 >
                   <div className="flex items-center gap-3">
@@ -2790,7 +2814,7 @@ export default function Dashboard() {
                     <span>Apple Maps</span>
                   </div>
                   <ExternalLink className="w-4 h-4 opacity-70" />
-                </a>
+                </button>
               </div>
 
               <div className="h-4 sm:h-0" />
