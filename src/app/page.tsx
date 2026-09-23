@@ -2275,24 +2275,84 @@ export default function Dashboard() {
           )}
 
           {/* FOCUS IN-PROGRESS CARD */}
-          {activeEvent && nextEvent !== activeEvent && (
-            <div className="bg-white rounded-[24px] p-6 shadow-sm border border-slate-100/60 flex flex-col">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">In Corso</h3>
-                <div className="flex items-center gap-2">
-                  <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${categoryStyles[activeEvent.category]}`}>
-                    {activeEvent.category}
-                  </span>
-                  {renderCardActionButtons(activeEvent)}
+          {activeEvent && nextEvent !== activeEvent && (() => {
+            return (
+              <div className="bg-white rounded-[24px] p-6 shadow-sm border border-slate-100/60 relative mb-6">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest leading-none">In Corso</h3>
+                  <div className="flex items-center gap-2">
+                    <span className="px-3 py-1 rounded-full text-[11px] font-bold tracking-wide leading-none bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                      🟢 In Corso
+                    </span>
+                    {renderCardActionButtons(activeEvent)}
+                  </div>
                 </div>
+
+                <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest mt-1 mb-3">
+                  Sei arrivato a destinazione? Tocca la spunta per completare
+                </p>
+
+                <div className="mb-6">
+                  <div className="flex flex-wrap items-center gap-2 mb-2.5">
+                    <h2 className="text-[22px] font-semibold text-slate-800 leading-tight pr-10">{activeEvent.title}</h2>
+                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${categoryStyles[activeEvent.category]}`}>
+                      {activeEvent.category}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-2 text-[13px] font-medium text-slate-500 mt-3">
+                    <span className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-slate-400" />
+                      Iniziato alle {activeEvent.targetTime}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-slate-400 shrink-0" />
+                      <span className="line-clamp-1">{activeEvent.destinationName}</span>
+                    </span>
+                  </div>
+                </div>
+
+                {/* ROUTE & TRAVEL INFO BOX GRACEFUL STATE */}
+                <div className="bg-[#F5F5F7] rounded-[16px] p-4 mb-6 text-center text-[12px] font-medium text-slate-600 shadow-inner">
+                  🚗 Evento in corso &bull; Apri il navigatore se sei ancora per strada
+                </div>
+
+                {/* INTERACTIVE PRE-DEPARTURE CHECKLIST */}
+                {activeEvent.checklist.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-[10px] font-bold text-slate-400 mb-2.5 uppercase tracking-widest">Da prendere</p>
+                    <div className="flex flex-wrap gap-2">
+                      {activeEvent.checklist.map((item) => {
+                        const cleanLabel = item.replace(/^✓\s*/, "");
+                        const isChecked = item.startsWith("✓ ");
+                        return (
+                          <button
+                            key={cleanLabel}
+                            onClick={() => toggleEventChecklistItem(activeEvent.id, cleanLabel)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-all border ${
+                              isChecked
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-300 opacity-90 line-through"
+                                : "bg-white text-slate-700 border-slate-200 shadow-sm hover:bg-slate-50"
+                            }`}
+                          >
+                            {cleanLabel}
+                            {isChecked && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" strokeWidth={3} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* MAPS ACTION BUTTON */}
+                <button
+                  onClick={() => setMapsTargetEvent(activeEvent)}
+                  className="w-full bg-[#007AFF] text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-[#007AFF]/90 active:scale-[0.98] transition-all"
+                >
+                  <Navigation2 className="w-4 h-4" /> Apri Mappe
+                </button>
               </div>
-              <h2 className="text-[22px] leading-tight font-semibold text-slate-800 mb-2.5">{activeEvent.title}</h2>
-              <div className="flex items-center gap-1.5 text-[13px] text-slate-500 font-medium">
-                <Clock className="w-3.5 h-3.5 text-slate-400" />
-                <span>Iniziato alle {activeEvent.targetTime}</span>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* NEXT UP CARD WITH TRANSPORT MODE ICON & WEATHER */}
           {nextEvent && (() => {
