@@ -387,7 +387,7 @@ export default function Dashboard() {
       secondsLeft: initialSecs,
       initialSeconds: initialSecs,
       isRunning: true,
-      isExpandedView: false,
+      isExpandedView: true,
     });
     setIsStudyModalOpen(false);
     setStudySubject("");
@@ -458,8 +458,8 @@ export default function Dashboard() {
           category: "Lavoro",
           date: todayStr,
           targetTime: newRoutine.start_time,
-          destinationName: newRoutine.location_name,
-          destinationCoords: newRoutine.location_coords || { lat: 39.362, lon: 16.225 },
+          destinationName: newRoutine.location_name || (defaultCampus ? defaultCampus.name : "Aula"),
+          destinationCoords: newRoutine.location_coords?.lat ? newRoutine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
           bufferMinutes: 10,
           checklist: [],
           status: "active",
@@ -894,8 +894,8 @@ export default function Dashboard() {
                     category: "Lavoro",
                     date: todayStr,
                     targetTime: routine.start_time || "09:00",
-                    destinationName: routine.aula || "Università",
-                    destinationCoords: { lat: 39.360, lon: 16.226 }, // Fallback UNICAL
+                    destinationName: routine.location_name || routine.aula || (defaultCampus ? defaultCampus.name : "Università / Scuola"),
+                    destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
                     origin_type: "live",
                     origin_coords: null,
                     origin_address: null,
@@ -3209,6 +3209,69 @@ export default function Dashboard() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* SECTION CAMPUS: SEDE PREDEFINITA STUDIO / SCUOLA */}
+              <div className="bg-[#F5F5F7] p-4 rounded-[20px] flex flex-col gap-3">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🎓</span>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Sede Predefinita (Università / Scuola)</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingCampus(!isEditingCampus)}
+                    className="text-xs font-bold text-blue-600 hover:underline"
+                  >
+                    {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-slate-500 font-medium">
+                  {defaultCampus ? defaultCampus.name : "Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni."}
+                </p>
+
+                {isEditingCampus && (
+                  <div className="mt-1 relative">
+                    <input
+                      type="text"
+                      placeholder="Cerca il tuo campus o università..."
+                      value={campusSearchQuery}
+                      onChange={(e) => setCampusSearchQuery(e.target.value)}
+                      className="w-full bg-white text-slate-800 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
+                    />
+                    {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-3 top-2.5" />}
+
+                    {campusSuggestions.length > 0 && (
+                      <div className="bg-white rounded-xl shadow-lg border border-slate-200 mt-1 max-h-40 overflow-y-auto z-[90] relative">
+                        {campusSuggestions.map((s, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            className="w-full text-left px-3 py-2 hover:bg-blue-50 text-xs flex items-center gap-2 border-b border-slate-100 last:border-0"
+                            onClick={() => {
+                              const newCap = { name: s.name, coords: { lat: s.lat, lon: s.lon } };
+                              setDefaultCampus(newCap);
+                              setIsEditingCampus(false);
+                              setCampusSearchQuery("");
+                              setCampusSuggestions([]);
+                              syncUserSetting({
+                                default_campus_name: newCap.name,
+                                default_campus_coords: newCap.coords,
+                              });
+                            }}
+                          >
+                            <span>{s.icon || "🎓"}</span>
+                            <div className="min-w-0">
+                              <p className="font-bold text-slate-900 truncate">{s.name}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{s.secondary}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* SECTION 2: PREFERENZE VIAGGIO */}
