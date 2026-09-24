@@ -947,7 +947,7 @@ export default function Dashboard() {
           .from("user_settings")
           .select("*")
           .eq("user_id", authUser.id)
-          .single();
+          .maybeSingle();
 
         if (!settingsError && settingsData) {
           if (settingsData.home_address && settingsData.home_coords) {
@@ -1317,7 +1317,10 @@ export default function Dashboard() {
   const syncUserSetting = async (updates: any) => {
     if (authUser && supabase && isSupabaseConfigured) {
       try {
-        await supabase.from("user_settings").upsert({ user_id: authUser.id, ...updates });
+        await supabase.from("user_settings").upsert(
+          { user_id: authUser.id, ...updates, updated_at: new Date().toISOString() },
+          { onConflict: "user_id" }
+        );
       } catch (e) { console.error("Sync settings error", e); }
     }
   };
