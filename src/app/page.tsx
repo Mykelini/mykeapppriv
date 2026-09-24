@@ -18,7 +18,7 @@ import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { fetchRealtimeRoute } from "@/lib/routing";
 
 // --- Types & Schema ---
-type EventCategory = "Lavoro" | "Salute" | "Personale" | "Sport";
+type EventCategory = "Lavoro" | "Salute" | "Personale" | "Sport" | "Studio";
 type EventStatus = "active" | "completed";
 type TransportMode = "driving" | "walking" | "cycling";
 
@@ -77,6 +77,7 @@ const categoryStyles: Record<EventCategory, string> = {
   Lavoro: "border-emerald-500 text-emerald-700 bg-emerald-500/10",
   Salute: "border-blue-500 text-blue-700 bg-blue-500/10",
   Personale: "border-amber-500 text-amber-700 bg-amber-500/10",
+  Studio: "border-indigo-500 text-indigo-700 bg-indigo-500/10",
 };
 
 // No hardcoded locations allowed
@@ -455,7 +456,7 @@ export default function Dashboard() {
         {
           id: `routine_${newRoutine.id}_${todayStr}`,
           title: newRoutine.title,
-          category: "Lavoro",
+          category: "Studio",
           date: todayStr,
           targetTime: newRoutine.start_time,
           destinationName: newRoutine.location_name || (defaultCampus ? defaultCampus.name : "Aula"),
@@ -2327,7 +2328,7 @@ export default function Dashboard() {
   }
 
   return (
-    <main className="flex flex-col min-h-screen bg-[#F5F5F7] pb-24 relative overflow-x-hidden font-sans">
+    <main className="flex flex-col min-h-screen h-auto bg-[#F5F5F7] pb-24 relative overflow-y-auto overscroll-y-contain font-sans">
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
         {/* HEADER - DECLUTTERED APPLE STYLE */}
         <header 
@@ -2385,14 +2386,14 @@ export default function Dashboard() {
               </span>
             </button>
 
-            {/* Weekly Schedule Button */}
+            {/* Weekly Schedule Button (Icon-Only Desktop & Mobile) */}
             <button
               onClick={() => setIsRoutinesModalOpen(true)}
-              title="Orario e Routine"
-              className="p-2 sm:px-3 sm:py-1.5 rounded-full flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200/80 text-slate-700 transition-all border border-slate-200 shadow-sm shrink-0"
+              aria-label="Orario settimanale"
+              title="Orario settimanale"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center bg-white/80 border border-gray-200/80 shadow-sm hover:bg-gray-50 active:scale-95 transition-all shrink-0"
             >
-              <Calendar className="w-3.5 h-3.5 shrink-0" />
-              <span className="text-xs font-semibold hidden sm:inline-flex uppercase tracking-wider">Orario</span>
+              <Calendar className="w-4 h-4 text-slate-700 shrink-0" />
             </button>
 
             {/* Profile Avatar Button */}
@@ -3886,8 +3887,16 @@ export default function Dashboard() {
                 <input
                   type="text"
                   value={newEventTitle}
-                  onChange={(e) => setNewEventTitle(e.target.value)}
-                  placeholder="Es. Padel, Dentista, Spesa"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setNewEventTitle(val);
+                    const lower = val.toLowerCase();
+                    const studyKeywords = ["studio", "lezione", "esame", "università", "universita", "unical", "ripasso", "corso", "scuola", "tesi", "fisica", "analisi", "mate"];
+                    if (studyKeywords.some((k) => lower.includes(k))) {
+                      setNewEventCategory("Studio");
+                    }
+                  }}
+                  placeholder="Es. Padel, Lezione Fisica, Spesa"
                   className="w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all placeholder:text-slate-400 text-sm"
                 />
               </div>
@@ -3898,7 +3907,7 @@ export default function Dashboard() {
                   Categoria
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {(["Sport", "Lavoro", "Salute", "Personale"] as EventCategory[]).map((cat) => (
+                  {(["Sport", "Lavoro", "Salute", "Personale", "Studio"] as EventCategory[]).map((cat) => (
                     <button
                       key={cat}
                       onClick={() => setNewEventCategory(cat)}
