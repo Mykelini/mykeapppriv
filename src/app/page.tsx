@@ -757,9 +757,17 @@ export default function Dashboard() {
     try {
       // Master events are loaded purely from Supabase now
 
-      // Load Mapbox Token (Still valid in local storage as it's an API key)
+      // Load Mapbox Token
       const storedMapbox = localStorage.getItem("ontime_mapbox_token");
       if (storedMapbox) setMapboxToken(storedMapbox);
+
+      // Fast-Initial Campus Cache read
+      const cachedCampus = localStorage.getItem("ontime_campus_cached");
+      if (cachedCampus) {
+        try {
+          setDefaultCampus(JSON.parse(cachedCampus));
+        } catch (e) {}
+      }
 
       // 1. Force GPS as default on startup
       setLocationMode("gps");
@@ -815,7 +823,14 @@ export default function Dashboard() {
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setAuthUser(session?.user ?? null);
+      const user = session?.user ?? null;
+      setAuthUser(user);
+      if (user && typeof window !== "undefined") {
+        const userCached = localStorage.getItem(`ontime_campus_${user.id}`);
+        if (userCached) {
+          try { setDefaultCampus(JSON.parse(userCached)); } catch (e) {}
+        }
+      }
       setAuthChecking(false);
     }).catch(() => {
       setAuthChecking(false);
@@ -939,7 +954,12 @@ export default function Dashboard() {
             setHomeLocation({ name: settingsData.home_address, coords: settingsData.home_coords });
           }
           if (settingsData.default_campus_name && settingsData.default_campus_coords) {
-            setDefaultCampus({ name: settingsData.default_campus_name, coords: settingsData.default_campus_coords });
+            const cap = { name: settingsData.default_campus_name, coords: settingsData.default_campus_coords };
+            setDefaultCampus(cap);
+            if (typeof window !== "undefined") {
+              localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(cap));
+              localStorage.setItem("ontime_campus_cached", JSON.stringify(cap));
+            }
           }
           if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
@@ -3907,7 +3927,7 @@ export default function Dashboard() {
                   Categoria
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {(["Sport", "Lavoro", "Salute", "Personale", "Studio"] as EventCategory[]).map((cat) => (
+                  {(["Sport", "Lavoro", "Salute", "Studio", "Personale"] as EventCategory[]).map((cat) => (
                     <button
                       key={cat}
                       onClick={() => setNewEventCategory(cat)}
