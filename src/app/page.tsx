@@ -974,6 +974,7 @@ export default function Dashboard() {
             const cap = { name: settingsData.default_campus_name, coords: settingsData.default_campus_coords };
             setDefaultCampus(cap);
             if (typeof window !== "undefined") {
+              localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(cap));
               localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(cap));
               localStorage.setItem("ontime_campus_cached", JSON.stringify(cap));
             }
@@ -1363,15 +1364,58 @@ export default function Dashboard() {
 
   const saveCampusSetting = async (newCap: CampusLocation) => {
     setDefaultCampus(newCap);
+    
+    // 1. Immediate local persistence
     if (typeof window !== "undefined") {
-      const key = authUser ? `ontime_campus_${authUser.id}` : "ontime_campus_guest";
-      localStorage.setItem(key, JSON.stringify(newCap));
+      if (authUser?.id) {
+        localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(newCap));
+        localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(newCap));
+      }
       localStorage.setItem("ontime_campus_cached", JSON.stringify(newCap));
     }
-    syncUserSetting({
-      default_campus_name: newCap.name,
-      default_campus_coords: newCap.coords,
-    });
+
+    // 2. Zero-schema cloud persistence via Supabase Auth Metadata
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        const { error } = await supabase.auth.updateUser({
+          data: { default_campus: newCap }
+        });
+        if (error) {
+          console.error("Error saving campus metadata:", error);
+        }
+        // Also sync to user_settings DB table
+        syncUserSetting({
+          default_campus_name: newCap.name,
+          default_campus_coords: newCap.coords,
+        });
+      } catch (err) {
+        console.error("Save campus error:", err);
+      }
+    }
+  };
+
+  const removeCampusSetting = async () => {
+    setDefaultCampus(null);
+    if (typeof window !== "undefined") {
+      if (authUser?.id) {
+        localStorage.removeItem(`ontime_default_campus_${authUser.id}`);
+        localStorage.removeItem(`ontime_campus_${authUser.id}`);
+      }
+      localStorage.removeItem("ontime_campus_cached");
+    }
+    if (authUser && supabase && isSupabaseConfigured) {
+      try {
+        await supabase.auth.updateUser({
+          data: { default_campus: null }
+        });
+        syncUserSetting({
+          default_campus_name: null,
+          default_campus_coords: null,
+        });
+      } catch (err) {
+        console.error("Remove campus error:", err);
+      }
+    }
   };
 
   const saveNewHomeBase = (newBase: BaseLocation) => {
@@ -3327,17 +3371,28 @@ export default function Dashboard() {
                     <span className="text-base">🎓</span>
                     <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Sede Predefinita (Università / Scuola)</h3>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsEditingCampus(!isEditingCampus)}
-                    className="text-xs font-bold text-blue-600 hover:underline"
-                  >
-                    {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {defaultCampus && !isEditingCampus && (
+                      <button
+                        type="button"
+                        onClick={removeCampusSetting}
+                        className="text-xs font-bold text-red-500 hover:underline"
+                      >
+                        Rimuovi
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingCampus(!isEditingCampus)}
+                      className="text-xs font-bold text-blue-600 hover:underline"
+                    >
+                      {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
+                    </button>
+                  </div>
                 </div>
 
-                <p className="text-[11px] text-slate-500 font-medium">
-                  {defaultCampus ? defaultCampus.name : "Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni."}
+                <p className={`text-[11px] ${defaultCampus ? "font-bold text-slate-900" : "font-medium text-slate-500"}`}>
+                  {defaultCampus ? `🎓 ${defaultCampus.name}` : "Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni."}
                 </p>
 
                 {isEditingCampus && (
@@ -4674,18 +4729,29 @@ export default function Dashboard() {
                   <span className="text-base shrink-0">🎓</span>
                   <div className="min-w-0">
                     <h4 className="text-xs font-bold text-slate-800">Sede Predefinita (Università / Scuola)</h4>
-                    <p className="text-[11px] text-slate-600 font-medium truncate">
-                      {defaultCampus ? defaultCampus.name : "Nessuna sede salvata"}
+                    <p className={`text-[11px] truncate ${defaultCampus ? "font-bold text-slate-900" : "font-medium text-slate-500"}`}>
+                      {defaultCampus ? defaultCampus.name : "Nessuna sede configurata"}
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsEditingCampus(!isEditingCampus)}
-                  className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shrink-0 shadow-xs"
-                >
-                  {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {defaultCampus && !isEditingCampus && (
+                    <button
+                      type="button"
+                      onClick={removeCampusSetting}
+                      className="px-2.5 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-colors"
+                    >
+                      Rimuovi
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingCampus(!isEditingCampus)}
+                    className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shadow-xs"
+                  >
+                    {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
+                  </button>
+                </div>
               </div>
 
               {isEditingCampus && (
