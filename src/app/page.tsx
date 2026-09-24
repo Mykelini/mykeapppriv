@@ -140,10 +140,6 @@ export default function Dashboard() {
   const [authChecking, setAuthChecking] = useState<boolean>(true);
   const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [isRoutinesModalOpen, setIsRoutinesModalOpen] = useState(false);
-  const [isStudyModalOpen, setIsStudyModalOpen] = useState(false);
-  const [activeStudyBlock, setActiveStudyBlock] = useState<any>(null);
-  const [userRoutines, setUserRoutines] = useState<any[]>([]);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -246,6 +242,205 @@ export default function Dashboard() {
 
   // Header refresh state
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Routines & Classes State
+  type UserRoutine = {
+    id: string;
+    user_id?: string;
+    day_of_week: number; // 0=Dom, 1=Lun, 2=Mar, 3=Mer, 4=Gio, 5=Ven, 6=Sab
+    title: string;
+    start_time: string;
+    end_time: string;
+    location_name: string;
+    location_coords?: { lat: number; lon: number };
+    transport_mode?: TransportMode;
+    buffer_minutes?: number;
+    checklist?: string[];
+  };
+
+  const [isRoutinesModalOpen, setIsRoutinesModalOpen] = useState(false);
+  const [userRoutines, setUserRoutines] = useState<UserRoutine[]>([]);
+  const [selectedRoutineDay, setSelectedRoutineDay] = useState<number>(() => {
+    return new Date().getDay();
+  });
+  const [newRoutineTitle, setNewRoutineTitle] = useState("");
+  const [newRoutineStartTime, setNewRoutineStartTime] = useState("");
+  const [newRoutineEndTime, setNewRoutineEndTime] = useState("");
+  const [newRoutineLocation, setNewRoutineLocation] = useState("");
+  const [isSavingRoutine, setIsSavingRoutine] = useState(false);
+
+  // Study Focus Timer State
+  type ActiveStudyBlock = {
+    subject: string;
+    initialMinutes: number;
+    secondsLeft: number;
+    isRunning: boolean;
+  };
+
+  const [isStudyModalOpen, setIsStudyModalOpen] = useState(false);
+  const [studySubject, setStudySubject] = useState("");
+  const [selectedStudyDuration, setSelectedStudyDuration] = useState<number>(25);
+  const [activeStudyBlock, setActiveStudyBlock] = useState<ActiveStudyBlock | null>(null);
+
+  const saveStudySessionToSupabase = async (subject: string, minutes: number, completed: boolean) => {
+    if (!authUser || !supabase) return;
+    try {
+      await supabase.from("study_sessions").insert([{
+        user_id: authUser.id,
+        subject,
+        duration_minutes: minutes,
+        session_date: format(new Date(), "yyyy-MM-dd"),
+        completed
+      }]);
+    } catch (err) {
+      console.error("Error saving study session:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (!activeStudyBlock || !activeStudyBlock.isRunning) return;
+
+    const timer = setInterval(() => {
+      setActiveStudyBlock((prev: ActiveStudyBlock | null) => {
+        if (!prev) return null;
+        if (prev.secondsLeft <= 1) {
+          clearInterval(timer);
+          playDepartureChime();
+          saveStudySessionToSupabase(prev.subject, prev.initialMinutes, true);
+          alert(`🎉 Sessione di studio per "${prev.subject}" completata! Ben fatto!`);
+          return null;
+        }
+        return { ...prev, secondsLeft: prev.secondsLeft - 1 };
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeStudyBlock?.isRunning]);
+
+  const handleStartStudyBlock = () => {
+    const subj = studySubject.trim() || "Studio Generale";
+    setActiveStudyBlock({
+      subject: subj,
+      initialMinutes: selectedStudyDuration,
+      secondsLeft: selectedStudyDuration * 60,
+      isRunning: true,
+    });
+    setIsStudyModalOpen(false);
+    setStudySubject("");
+  };
+
+  const togglePauseResumeStudy = () => {
+    if (!activeStudyBlock) return;
+    setActiveStudyBlock((prev: ActiveStudyBlock | null) => prev ? { ...prev, isRunning: !prev.isRunning } : null);
+  };
+
+  const handleAdd5MinsToStudy = () => {
+    if (!activeStudyBlock) return;
+    setActiveStudyBlock((prev: ActiveStudyBlock | null) => prev ? {
+      ...prev,
+      secondsLeft: prev.secondsLeft + 300,
+      initialMinutes: prev.initialMinutes + 5
+    } : null);
+  };
+
+  const handleEndStudySession = () => {
+    if (!activeStudyBlock) return;
+    const elapsedMins = Math.max(1, Math.round((activeStudyBlock.initialMinutes * 60 - activeStudyBlock.secondsLeft) / 60));
+    saveStudySessionToSupabase(activeStudyBlock.subject, elapsedMins, true);
+    setActiveStudyBlock(null);
+  };
+
+  const formatTimerMinutesSeconds = (totalSecs: number) => {
+    const m = Math.floor(totalSecs / 60);
+    const s = totalSecs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const handleAddRoutine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRoutineTitle.trim() || !newRoutineStartTime || !newRoutineEndTime) {
+      alert("Compila materia, orario inizio e orario fine!");
+      return;
+    }
+
+    setIsSavingRoutine(true);
+    const id = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString();
+    const newRoutine: UserRoutine = {
+      id,
+      user_id: authUser?.id,
+      day_of_week: selectedRoutineDay,
+      title: newRoutineTitle.trim(),
+      start_time: newRoutineStartTime,
+      end_time: newRoutineEndTime,
+      location_name: newRoutineLocation.trim() || "Aula",
+      location_coords: currentLoc || { lat: 39.362, lon: 16.225 },
+      transport_mode: "driving",
+      buffer_minutes: 10,
+      checklist: [],
+    };
+
+    const updated = [...userRoutines, newRoutine];
+    setUserRoutines(updated);
+    
+    // Spawn if for today
+    const todayDay = new Date().getDay();
+    if (newRoutine.day_of_week === todayDay) {
+      const todayStr = format(new Date(), "yyyy-MM-dd");
+      setMasterEvents((prev) => [
+        ...prev,
+        {
+          id: `routine_${newRoutine.id}_${todayStr}`,
+          title: newRoutine.title,
+          category: "Lavoro",
+          date: todayStr,
+          targetTime: newRoutine.start_time,
+          destinationName: newRoutine.location_name,
+          destinationCoords: newRoutine.location_coords || { lat: 39.362, lon: 16.225 },
+          bufferMinutes: 10,
+          checklist: [],
+          status: "active",
+          transportMode: "driving",
+        },
+      ]);
+    }
+
+    if (authUser && supabase) {
+      try {
+        await supabase.from("user_routines").insert([{
+          id: newRoutine.id,
+          user_id: authUser.id,
+          day_of_week: newRoutine.day_of_week,
+          title: newRoutine.title,
+          start_time: newRoutine.start_time,
+          end_time: newRoutine.end_time,
+          location_name: newRoutine.location_name,
+          location_coords: newRoutine.location_coords,
+          transport_mode: newRoutine.transport_mode,
+          buffer_minutes: newRoutine.buffer_minutes,
+          checklist: newRoutine.checklist,
+        }]);
+      } catch (err) {
+        console.error("Error inserting routine:", err);
+      }
+    }
+
+    setNewRoutineTitle("");
+    setNewRoutineStartTime("");
+    setNewRoutineEndTime("");
+    setNewRoutineLocation("");
+    setIsSavingRoutine(false);
+  };
+
+  const handleDeleteRoutine = async (id: string) => {
+    setUserRoutines((prev) => prev.filter((r) => r.id !== id));
+    if (authUser && supabase) {
+      try {
+        await supabase.from("user_routines").delete().eq("id", id).eq("user_id", authUser.id);
+      } catch (err) {
+        console.error("Error deleting routine:", err);
+      }
+    }
+  };
 
   // Ref for GPS Watch ID
   const watchIdRef = useRef<number | null>(null);
@@ -2052,10 +2247,11 @@ export default function Dashboard() {
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
         {/* HEADER - DECLUTTERED APPLE STYLE */}
         <header 
-          className="w-full max-w-full px-4 pb-3 flex items-center justify-between overflow-x-hidden bg-[#F5F5F7] sticky top-0 z-50"
+          className="w-full max-w-full px-4 py-3 flex items-center justify-between gap-2 overflow-x-hidden bg-[#F5F5F7] sticky top-0 z-50 border-b border-slate-200/40"
           style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}
         >
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Left Side: Logo + App Title + Refresh Button */}
+          <div className="flex items-center gap-2 shrink-0">
             <div className="relative w-8 h-8 rounded-[10px] overflow-hidden shadow-sm shrink-0">
               <Image src="/logo.png" alt="OnTime Logo" fill className="object-cover" />
             </div>
@@ -2063,9 +2259,6 @@ export default function Dashboard() {
               <h1 className="text-xl font-bold tracking-tight text-slate-900 hidden sm:block">OnTime</h1>
               <Navigation2 className="w-3.5 h-3.5 text-blue-600 fill-blue-600 hidden sm:block" />
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
             {authUser && (
               <button
                 onClick={async () => {
@@ -2074,20 +2267,23 @@ export default function Dashboard() {
                   await loadUserEvents();
                   setTimeout(() => setIsRefreshing(false), 700);
                 }}
-                className="w-9 h-9 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-100 transition-colors shrink-0"
+                className="w-8 h-8 bg-white rounded-full shadow-sm shadow-slate-200/50 flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 transition-colors shrink-0"
                 title="Sincronizza Cloud"
               >
-                <RefreshCw className={`w-4 h-4 transform transition-transform duration-700 ${isRefreshing ? 'rotate-180' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 transform transition-transform duration-700 ${isRefreshing ? 'rotate-180' : ''}`} />
               </button>
             )}
-            
-            {/* 1. TOP-RIGHT SMART LOCATION PILL */}
+          </div>
+
+          {/* Right Side: Location Pill + Schedule Button + Profile Avatar */}
+          <div className="flex items-center gap-2 shrink-0 max-w-full">
+            {/* Location Pill */}
             <button
               onClick={() => {
                 setIsEditingBase(false);
                 setIsLocationModalOpen(true);
               }}
-              className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all border shadow-sm min-w-0 flex-1 max-w-[150px] sm:max-w-[200px] truncate mx-1 ${
+              className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all border shadow-sm min-w-0 max-w-[140px] truncate ${
                 locationMode === "gps"
                   ? "bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
                   : "bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200/80"
@@ -2100,22 +2296,22 @@ export default function Dashboard() {
               ) : (
                 <Home className="w-3.5 h-3.5 text-slate-500 shrink-0" />
               )}
-              <span className="text-xs font-semibold uppercase tracking-wider truncate text-right">
+              <span className="text-xs font-semibold uppercase tracking-wider truncate">
                 {formatPillCity(currentCity)}
               </span>
             </button>
 
-            {/* 1.5 WEEKLY ROUTINE BUTTON */}
+            {/* Weekly Schedule Button */}
             <button
               onClick={() => setIsRoutinesModalOpen(true)}
               title="Orario e Routine"
-              className="px-3 py-1.5 rounded-full flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200/80 text-slate-700 transition-all border shadow-sm mx-1"
+              className="p-2 sm:px-3 sm:py-1.5 rounded-full flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200/80 text-slate-700 transition-all border border-slate-200 shadow-sm shrink-0"
             >
-              <Calendar className="w-3.5 h-3.5" />
-              <span className="text-xs font-semibold hidden sm:inline-block uppercase tracking-wider">Orario</span>
+              <Calendar className="w-3.5 h-3.5 shrink-0" />
+              <span className="text-xs font-semibold hidden sm:inline-flex uppercase tracking-wider">Orario</span>
             </button>
 
-            {/* 2. UNIFIED APPLE PROFILE AVATAR BUTTON */}
+            {/* Profile Avatar Button */}
             <button
               onClick={() => {
                 if (!authUser) {
@@ -2125,7 +2321,7 @@ export default function Dashboard() {
                 }
               }}
               title={authUser ? `Profilo: ${authUser.email}` : "Accedi o Sincronizza Account"}
-              className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center shadow-md relative hover:scale-105 active:scale-95 transition-all ${
+              className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center shadow-md relative hover:scale-105 active:scale-95 transition-all shrink-0 ${
                 authUser ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-slate-800 text-white"
               }`}
             >
@@ -2180,6 +2376,69 @@ export default function Dashboard() {
 
         {dateTab === "tutti" ? (
           <div className="px-5 flex flex-col gap-5 flex-1">
+            {/* ACTIVE FOCUS STUDY TIMER CARD */}
+            {activeStudyBlock && (
+              <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white rounded-[24px] p-6 shadow-xl border border-indigo-500/30 relative overflow-hidden animate-in fade-in zoom-in-95 duration-300">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-300">Focus Studio Attivo</span>
+                  </div>
+                  <span className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-200 text-xs font-semibold rounded-full border border-indigo-400/30">
+                    📖 {activeStudyBlock.subject}
+                  </span>
+                </div>
+
+                {/* Countdown Timer MM:SS */}
+                <div className="flex flex-col items-center justify-center my-3">
+                  <h2 className="text-5xl font-black tracking-tight font-mono text-white drop-shadow-md">
+                    {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
+                  </h2>
+                  <p className="text-xs font-medium text-indigo-300 mt-1">
+                    {activeStudyBlock.isRunning ? "Concentrazione in corso..." : "In Pausa"}
+                  </p>
+                </div>
+
+                {/* Progress Bar */}
+                {(() => {
+                  const totalSec = activeStudyBlock.initialMinutes * 60;
+                  const elapsed = totalSec - activeStudyBlock.secondsLeft;
+                  const pct = Math.min(100, Math.max(0, (elapsed / totalSec) * 100));
+                  return (
+                    <div className="w-full bg-indigo-950/80 rounded-full h-2 mb-5 overflow-hidden border border-indigo-700/50">
+                      <div 
+                        className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full transition-all duration-1000 ease-linear rounded-full"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  );
+                })()}
+
+                {/* Control Actions Row */}
+                <div className="flex items-center justify-center gap-2.5">
+                  <button
+                    onClick={togglePauseResumeStudy}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 active:scale-95 rounded-xl text-xs font-bold text-white transition-all border border-white/10 flex items-center gap-1.5"
+                  >
+                    {activeStudyBlock.isRunning ? "⏸ Pausa" : "▶️ Riprendi"}
+                  </button>
+
+                  <button
+                    onClick={handleAdd5MinsToStudy}
+                    className="px-3 py-2 bg-indigo-600/50 hover:bg-indigo-600 active:scale-95 rounded-xl text-xs font-bold text-indigo-100 transition-all border border-indigo-500/40"
+                  >
+                    +5m
+                  </button>
+
+                  <button
+                    onClick={handleEndStudySession}
+                    className="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 text-red-200 active:scale-95 rounded-xl text-xs font-bold transition-all border border-red-500/30 flex items-center gap-1"
+                  >
+                    ⏹ Termina
+                  </button>
+                </div>
+              </div>
+            )}
             {/* APPLE CALENDAR CARD */}
             <div className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100/60">
               <div className="flex justify-between items-center mb-4">
@@ -2675,22 +2934,9 @@ export default function Dashboard() {
                <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
                <div className="flex flex-col">
                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Focus Attivo</span>
-                 <span className="text-sm font-bold text-slate-800">{activeStudyBlock.title}</span>
+                 <span className="text-sm font-bold text-slate-800">{activeStudyBlock.subject}</span>
                </div>
-               <button onClick={async () => {
-                 if (authUser && supabase) {
-                   try {
-                     await supabase.from("study_sessions").insert([{
-                       user_id: authUser.id,
-                       title: activeStudyBlock.title,
-                       completed_at: new Date().toISOString()
-                     }]);
-                   } catch (e) {
-                     console.error(e);
-                   }
-                 }
-                 setActiveStudyBlock(null);
-               }} className="ml-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-full text-xs font-bold transition-colors">Termina</button>
+               <button onClick={handleEndStudySession} className="ml-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-full text-xs font-bold transition-colors">Termina</button>
             </div>
           ) : (
             <button
@@ -4080,48 +4326,211 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ROUTINES MODAL */}
+      {/* REAL WEEKLY SCHEDULE MODAL */}
       {isRoutinesModalOpen && (
         <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl relative">
+          <div className="bg-white w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-7 shadow-2xl relative max-h-[90vh] flex flex-col">
             <button
               onClick={() => setIsRoutinesModalOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"
+              className="absolute top-5 right-5 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
-            <h2 className="text-xl font-bold text-slate-900 mb-1">Routine & Orario</h2>
-            <p className="text-xs text-slate-500 font-medium mb-5">Gestisci le tue classi e le routine settimanali.</p>
-            <div className="text-center p-4 bg-slate-50 rounded-[16px] text-slate-500 text-sm font-medium">
-              <Calendar className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              Funzionalità in arrivo. (Mocked modal as requested)
+
+            <div className="flex items-center gap-2 mb-1">
+              <Calendar className="w-5 h-5 text-blue-600" />
+              <h2 className="text-xl font-bold text-slate-900">Orario Settimanale / Lezioni</h2>
             </div>
-            <button onClick={() => setIsRoutinesModalOpen(false)} className="w-full mt-4 bg-slate-900 text-white rounded-[16px] py-3.5 font-semibold text-sm">Chiudi</button>
+            <p className="text-xs text-slate-500 font-medium mb-4">
+              Imposta le lezioni ricorrenti per ciascun giorno della settimana.
+            </p>
+
+            {/* Segmented Day Selector */}
+            <div className="flex bg-slate-100 p-1 rounded-2xl mb-4 border border-slate-200/60 overflow-x-auto scrollbar-none shrink-0">
+              {[
+                { label: "Lun", value: 1 },
+                { label: "Mar", value: 2 },
+                { label: "Mer", value: 3 },
+                { label: "Gio", value: 4 },
+                { label: "Ven", value: 5 },
+                { label: "Sab", value: 6 },
+                { label: "Dom", value: 0 },
+              ].map((day) => (
+                <button
+                  key={day.value}
+                  type="button"
+                  onClick={() => setSelectedRoutineDay(day.value)}
+                  className={`flex-1 py-1.5 px-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap ${
+                    selectedRoutineDay === day.value
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  {day.label}
+                </button>
+              ))}
+            </div>
+
+            {/* List of Routines for Selected Day */}
+            <div className="flex-1 overflow-y-auto space-y-2 mb-4 pr-1 min-h-[100px]">
+              {userRoutines.filter((r) => r.day_of_week === selectedRoutineDay).length === 0 ? (
+                <div className="text-center py-6 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <p className="text-xs font-medium text-slate-400">Nessuna lezione in programma per questo giorno.</p>
+                </div>
+              ) : (
+                userRoutines
+                  .filter((r) => r.day_of_week === selectedRoutineDay)
+                  .map((routine) => (
+                    <div
+                      key={routine.id}
+                      className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 flex items-center justify-between"
+                    >
+                      <div className="min-w-0 flex-1 pr-2">
+                        <h4 className="font-bold text-slate-900 text-sm truncate">{routine.title}</h4>
+                        <div className="flex items-center gap-3 text-xs text-slate-500 font-medium mt-1">
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            {routine.start_time} - {routine.end_time}
+                          </span>
+                          <span className="flex items-center gap-1 truncate">
+                            <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span className="truncate">{routine.location_name}</span>
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRoutine(routine.id)}
+                        className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 text-red-500 flex items-center justify-center transition-colors shrink-0"
+                        title="Elimina lezione"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            {/* Form to Add New Routine */}
+            <form onSubmit={handleAddRoutine} className="pt-3 border-t border-slate-100 space-y-2.5 shrink-0">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">+ Aggiungi Lezione</h3>
+              
+              <div>
+                <input
+                  type="text"
+                  placeholder="Materia / Corso (es. Fisica 1)"
+                  value={newRoutineTitle}
+                  onChange={(e) => setNewRoutineTitle(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 block mb-1">Inizio</label>
+                  <input
+                    type="time"
+                    value={newRoutineStartTime}
+                    onChange={(e) => setNewRoutineStartTime(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 block mb-1">Fine</label>
+                  <input
+                    type="time"
+                    value={newRoutineEndTime}
+                    onChange={(e) => setNewRoutineEndTime(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  placeholder="Aula / Edificio (es. Aula Magna)"
+                  value={newRoutineLocation}
+                  onChange={(e) => setNewRoutineLocation(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSavingRoutine}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                {isSavingRoutine ? <Loader2 className="w-4 h-4 animate-spin" /> : "Salva Lezione"}
+              </button>
+            </form>
           </div>
         </div>
       )}
 
-      {/* STUDY SESSION MODAL */}
+      {/* REAL STUDY SESSION MODAL */}
       {isStudyModalOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-4 animate-in fade-in duration-300">
           <div className="bg-white w-full max-w-sm rounded-[32px] p-6 shadow-2xl relative">
             <button
               onClick={() => setIsStudyModalOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"
+              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
-            <h2 className="text-xl font-bold text-slate-900 mb-1">Sessione di Studio</h2>
-            <p className="text-xs text-slate-500 font-medium mb-5">Avvia un timer di focus.</p>
-            <button
-              onClick={() => {
-                setActiveStudyBlock({ title: "Studio" });
-                setIsStudyModalOpen(false);
-              }}
-              className="w-full bg-indigo-600 text-white rounded-[16px] py-3.5 font-semibold text-sm shadow-sm"
-            >
-              Inizia Focus
-            </button>
+
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xl">📖</span>
+              <h2 className="text-xl font-bold text-slate-900">Sessione Studio</h2>
+            </div>
+            <p className="text-xs text-slate-500 font-medium mb-5">
+              Imposta la materia e la durata della tua sessione di focus.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
+                  Materia
+                </label>
+                <input
+                  type="text"
+                  placeholder="es. Fisica, Analisi, Tesi..."
+                  value={studySubject}
+                  onChange={(e) => setStudySubject(e.target.value)}
+                  className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200 focus:border-indigo-500 px-3.5 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-1">
+                  Durata Focus
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[25, 50, 90].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setSelectedStudyDuration(mins)}
+                      className={`py-2.5 rounded-2xl text-xs font-bold border transition-all ${
+                        selectedStudyDuration === mins
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      {mins} min
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleStartStudyBlock}
+                className="w-full mt-2 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white font-bold text-sm rounded-2xl shadow-md shadow-indigo-500/20 transition-all flex items-center justify-center gap-2"
+              >
+                <span>Avvia Timer Focus</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
