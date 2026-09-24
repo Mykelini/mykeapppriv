@@ -3072,18 +3072,34 @@ export default function Dashboard() {
       {masterEvents.length > 0 && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 flex flex-col items-end gap-3 z-40">
           {activeStudyBlock ? (
-            <div className="bg-white px-4 py-3 rounded-[20px] shadow-lg border border-indigo-100 flex items-center gap-3 animate-in slide-in-from-right">
-               <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-               <div className="flex flex-col">
-                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Focus Attivo</span>
-                 <span className="text-sm font-bold text-slate-800">{activeStudyBlock.subject}</span>
-               </div>
-               <button onClick={handleEndStudySession} className="ml-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-full text-xs font-bold transition-colors">Termina</button>
-            </div>
+            <button
+              onClick={() => setIsStudyModalOpen(true)}
+              className={`px-4 py-3 rounded-2xl shadow-xl border flex items-center gap-3 transition-all hover:scale-105 active:scale-95 ${
+                activeStudyBlock.mode === "break"
+                  ? "bg-emerald-900 text-white border-emerald-500/40"
+                  : "bg-slate-900 text-white border-indigo-500/40"
+              }`}
+            >
+              <span className={`w-2.5 h-2.5 rounded-full animate-ping shrink-0 ${activeStudyBlock.mode === "break" ? "bg-emerald-400" : "bg-indigo-400"}`} />
+              <div className="flex flex-col items-start min-w-0 pr-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono font-bold text-xs text-white">
+                    {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
+                  </span>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-300">
+                    {activeStudyBlock.mode === "break" ? "Pausa" : "Studio"}
+                  </span>
+                </div>
+                <span className="text-[11px] font-semibold text-slate-300 truncate max-w-[110px]">
+                  {activeStudyBlock.subject}
+                </span>
+              </div>
+              <span className="text-xs bg-white/10 px-2 py-1 rounded-lg text-white font-semibold shrink-0">Apri ↗</span>
+            </button>
           ) : (
             <button
               onClick={() => setIsStudyModalOpen(true)}
-              className="px-4 py-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-full shadow-md font-bold text-sm flex items-center gap-2 transition-all"
+              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg font-bold text-sm flex items-center gap-2 transition-all"
             >
               📖 Sessione Studio
             </button>
@@ -4740,117 +4756,202 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* REAL STUDY SESSION MODAL */}
+      {/* REAL STUDY SESSION MODAL (SUPPORTING SETUP & ACTIVE FOCUS TIMER) */}
       {isStudyModalOpen && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-4 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-sm rounded-[32px] p-6 shadow-2xl relative">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 backdrop-blur-md p-4 animate-in fade-in duration-300">
+          <div className={`w-full max-w-sm rounded-[32px] p-6 shadow-2xl relative transition-all duration-300 ${
+            activeStudyBlock
+              ? activeStudyBlock.mode === "break"
+                ? "bg-gradient-to-br from-emerald-900 via-slate-900 to-emerald-950 text-white border border-emerald-500/30"
+                : "bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white border border-indigo-500/30"
+              : "bg-white text-slate-900"
+          }`}>
             <button
               onClick={() => setIsStudyModalOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
+              className={`absolute top-5 right-5 w-8 h-8 flex items-center justify-center rounded-full transition-colors ${
+                activeStudyBlock ? "bg-white/10 hover:bg-white/20 text-white" : "bg-slate-100 hover:bg-slate-200 text-slate-500"
+              }`}
             >
               <X className="w-4 h-4" />
             </button>
 
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xl">📖</span>
-              <h2 className="text-xl font-bold text-slate-900">Sessione Studio</h2>
-            </div>
-            <p className="text-xs text-slate-500 font-medium mb-5">
-              Imposta la materia e la durata della tua sessione di focus.
-            </p>
-
-            <div className="space-y-4">
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
-                  Materia / Argomento
-                </label>
-                <input
-                  type="text"
-                  placeholder="es. Fisica, Analisi 1, Tesi..."
-                  value={studySubject}
-                  onChange={(e) => setStudySubject(e.target.value)}
-                  className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200 focus:border-indigo-500 px-3.5 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-1">
-                  Intervalli Studio / Pausa
-                </label>
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setStudyPresetMode("25_5")}
-                    className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
-                      studyPresetMode === "25_5"
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    ⚡ 25m / 5m Pausa
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setStudyPresetMode("50_10")}
-                    className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
-                      studyPresetMode === "50_10"
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    🔥 50m / 10m Pausa
-                  </button>
+            {activeStudyBlock ? (
+              /* LIVE ACTIVE TIMER VIEW INSIDE MODAL */
+              <div className="flex flex-col items-center">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`w-2.5 h-2.5 rounded-full animate-ping ${activeStudyBlock.mode === "break" ? "bg-emerald-400" : "bg-indigo-400"}`} />
+                  <span className="text-xs font-bold uppercase tracking-widest text-slate-300">
+                    {activeStudyBlock.mode === "break" ? "🌿 Pausa Relax" : "📖 Focus Studio Attivo"}
+                  </span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setStudyPresetMode("custom")}
-                  className={`w-full py-2 px-3 rounded-2xl text-xs font-bold border transition-all text-center mb-2 ${
-                    studyPresetMode === "custom"
-                      ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                      : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                  }`}
-                >
-                  ⚙️ Personalizzato
-                </button>
+                <h3 className="text-lg font-bold text-white text-center mb-4 truncate max-w-[240px]">
+                  {activeStudyBlock.subject}
+                </h3>
 
-                {studyPresetMode === "custom" && (
-                  <div className="grid grid-cols-2 gap-2 p-3 bg-indigo-50/60 border border-indigo-100 rounded-2xl animate-in fade-in">
-                    <div>
-                      <label className="text-[10px] font-bold text-indigo-700 block mb-1">Studio (min)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="240"
-                        value={customStudyInput}
-                        onChange={(e) => setCustomStudyInput(e.target.value)}
-                        className="w-full bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/30"
+                {/* Big Live Countdown MM:SS */}
+                <div className="my-2 text-center">
+                  <h2 className="text-6xl font-black tracking-tight font-mono text-white drop-shadow-lg">
+                    {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
+                  </h2>
+                  <p className="text-xs font-medium text-slate-300 mt-2">
+                    {activeStudyBlock.mode === "break"
+                      ? (activeStudyBlock.isRunning ? "Pausa in corso... Rilassati!" : "Pausa in Sospeso")
+                      : (activeStudyBlock.isRunning ? "Concentrazione in corso..." : "In Pausa")}
+                  </p>
+                </div>
+
+                {/* Progress Bar */}
+                {(() => {
+                  const totalSec = activeStudyBlock.initialSeconds || 1500;
+                  const elapsed = totalSec - activeStudyBlock.secondsLeft;
+                  const pct = Math.min(100, Math.max(0, (elapsed / totalSec) * 100));
+                  return (
+                    <div className="w-full bg-slate-950/80 rounded-full h-2.5 my-5 overflow-hidden border border-white/10">
+                      <div 
+                        className={`h-full transition-all duration-1000 ease-linear rounded-full ${
+                          activeStudyBlock.mode === "break"
+                            ? "bg-gradient-to-r from-emerald-500 to-teal-300"
+                            : "bg-gradient-to-r from-indigo-500 to-emerald-400"
+                        }`}
+                        style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <div>
-                      <label className="text-[10px] font-bold text-emerald-700 block mb-1">Pausa (min)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="60"
-                        value={customBreakInput}
-                        onChange={(e) => setCustomBreakInput(e.target.value)}
-                        className="w-full bg-white border border-emerald-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/30"
-                      />
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
+
+                {/* Control Action Buttons */}
+                <div className="flex items-center justify-center gap-3 w-full mt-2">
+                  <button
+                    onClick={togglePauseResumeStudy}
+                    className="flex-1 py-3 bg-white/10 hover:bg-white/20 active:scale-95 rounded-2xl text-xs font-bold text-white transition-all border border-white/10 flex items-center justify-center gap-1.5"
+                  >
+                    {activeStudyBlock.isRunning ? "⏸ Pausa" : "▶️ Riprendi"}
+                  </button>
+
+                  <button
+                    onClick={handleAdd5MinsToStudy}
+                    className="px-4 py-3 bg-white/10 hover:bg-white/20 active:scale-95 rounded-2xl text-xs font-bold text-white transition-all border border-white/10"
+                  >
+                    +5m
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      handleEndStudySession();
+                      setIsStudyModalOpen(false);
+                    }}
+                    className="flex-1 py-3 bg-red-500/20 hover:bg-red-500/40 text-red-200 active:scale-95 rounded-2xl text-xs font-bold transition-all border border-red-500/30 flex items-center justify-center gap-1"
+                  >
+                    ⏹ Termina
+                  </button>
+                </div>
               </div>
+            ) : (
+              /* SETUP FORM (WHEN NO SESSION IS ACTIVE) */
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xl">📖</span>
+                  <h2 className="text-xl font-bold text-slate-900">Sessione Studio</h2>
+                </div>
+                <p className="text-xs text-slate-500 font-medium mb-5">
+                  Imposta la materia e la durata della tua sessione di focus.
+                </p>
 
-              <button
-                type="button"
-                onClick={handleStartStudyBlock}
-                className="w-full mt-2 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white font-bold text-sm rounded-2xl shadow-md shadow-indigo-500/20 transition-all flex items-center justify-center gap-2"
-              >
-                <span>Avvia Timer Focus</span>
-              </button>
-            </div>
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
+                      Materia / Argomento
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="es. Fisica, Analisi 1, Tesi..."
+                      value={studySubject}
+                      onChange={(e) => setStudySubject(e.target.value)}
+                      className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200 focus:border-indigo-500 px-3.5 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-1">
+                      Intervalli Studio / Pausa
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <button
+                        type="button"
+                        onClick={() => setStudyPresetMode("25_5")}
+                        className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
+                          studyPresetMode === "25_5"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        ⚡ 25m / 5m Pausa
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setStudyPresetMode("50_10")}
+                        className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
+                          studyPresetMode === "50_10"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        🔥 50m / 10m Pausa
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setStudyPresetMode("custom")}
+                      className={`w-full py-2 px-3 rounded-2xl text-xs font-bold border transition-all text-center mb-2 ${
+                        studyPresetMode === "custom"
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      ⚙️ Personalizzato
+                    </button>
+
+                    {studyPresetMode === "custom" && (
+                      <div className="grid grid-cols-2 gap-2 p-3 bg-indigo-50/60 border border-indigo-100 rounded-2xl animate-in fade-in">
+                        <div>
+                          <label className="text-[10px] font-bold text-indigo-700 block mb-1">Studio (min)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="240"
+                            value={customStudyInput}
+                            onChange={(e) => setCustomStudyInput(e.target.value)}
+                            className="w-full bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/30"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-emerald-700 block mb-1">Pausa (min)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="60"
+                            value={customBreakInput}
+                            onChange={(e) => setCustomBreakInput(e.target.value)}
+                            className="w-full bg-white border border-emerald-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/30"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleStartStudyBlock}
+                    className="w-full mt-2 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white font-bold text-sm rounded-2xl shadow-md shadow-indigo-500/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    <span>Avvia Timer Focus</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
