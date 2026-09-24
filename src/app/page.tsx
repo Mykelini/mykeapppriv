@@ -304,6 +304,7 @@ export default function Dashboard() {
   const [customBreakInput, setCustomBreakInput] = useState<string>("5");
   const [studyPresetMode, setStudyPresetMode] = useState<"25_5" | "50_10" | "custom">("25_5");
   const [activeStudyBlock, setActiveStudyBlock] = useState<ActiveStudyBlock | null>(null);
+  const [studyNotice, setStudyNotice] = useState<{ title: string; body: string; icon: string; mode: "study" | "break" } | null>(null);
 
   const saveStudySessionToSupabase = async (subject: string, minutes: number, completed: boolean) => {
     if (!authUser || !supabase) return;
@@ -335,7 +336,12 @@ export default function Dashboard() {
 
           if (prev.mode === "study") {
             saveStudySessionToSupabase(prev.subject, prev.studyMinutes, true);
-            alert(`🎉 Sessione di studio per "${prev.subject}" completata! Ora inizia la pausa relax (${prev.breakMinutes} min).`);
+            setStudyNotice({
+              title: "Sessione Completata!",
+              body: `Ottimo lavoro su "${prev.subject}"! È ora di fare una pausa relax di ${prev.breakMinutes} minuti.`,
+              icon: "🎉",
+              mode: "break",
+            });
             const breakSecs = prev.breakMinutes * 60;
             return {
               ...prev,
@@ -345,7 +351,12 @@ export default function Dashboard() {
               isRunning: true,
             };
           } else {
-            alert(`🌿 Pausa completata! Pronti per riprendere lo studio per "${prev.subject}"?`);
+            setStudyNotice({
+              title: "Pausa Completata!",
+              body: `La tua pausa relax è terminata. Sei pronto per riprendere lo studio su "${prev.subject}"?`,
+              icon: "🌿",
+              mode: "study",
+            });
             const studySecs = prev.studyMinutes * 60;
             return {
               ...prev,
@@ -901,7 +912,10 @@ export default function Dashboard() {
               
               if (runsToday) {
                 // Check if we already spawned it today in events table (prevent duplicate)
-                const alreadyExists = synced.some(e => e.title === routine.title && e.date === todayStr);
+                const alreadyExists = synced.some(e =>
+                  e.date === todayStr &&
+                  (e.id === `routine_${routine.id}_${todayStr}` || e.title.toLowerCase() === routine.title.toLowerCase())
+                );
                 
                 if (!alreadyExists) {
                   synced.push({
@@ -943,11 +957,14 @@ export default function Dashboard() {
     const syncSettings = async () => {
       try {
         // Fetch User Settings & Bookmarks
-        const { data: settingsData, error: settingsError } = await client
+        const { data: settingsRows, error: settingsError } = await client
           .from("user_settings")
           .select("*")
           .eq("user_id", authUser.id)
-          .maybeSingle();
+          .order("updated_at", { ascending: false, nullsFirst: false })
+          .limit(1);
+
+        const settingsData = settingsRows && settingsRows.length > 0 ? settingsRows[0] : null;
 
         if (!settingsError && settingsData) {
           if (settingsData.home_address && settingsData.home_coords) {
@@ -963,6 +980,25 @@ export default function Dashboard() {
           }
           if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
+        }
+
+        // Auto-heal: if DB setting doesn't have campus yet but localStorage has it, sync to DB
+        if (!settingsData?.default_campus_name && typeof window !== "undefined") {
+          const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) || localStorage.getItem("ontime_campus_cached");
+          if (cached) {
+            try {
+              const cap = JSON.parse(cached);
+              if (cap?.name && cap?.coords) {
+                setDefaultCampus(cap);
+                client.from("user_settings").upsert({
+                  user_id: authUser.id,
+                  default_campus_name: cap.name,
+                  default_campus_coords: cap.coords,
+                  updated_at: new Date().toISOString()
+                }, { onConflict: "user_id" }).then();
+              }
+            } catch (e) {}
+          }
         }
 
         // Fetch User Bookmarks
@@ -1325,6 +1361,19 @@ export default function Dashboard() {
     }
   };
 
+  const saveCampusSetting = async (newCap: CampusLocation) => {
+    setDefaultCampus(newCap);
+    if (typeof window !== "undefined") {
+      const key = authUser ? `ontime_campus_${authUser.id}` : "ontime_campus_guest";
+      localStorage.setItem(key, JSON.stringify(newCap));
+      localStorage.setItem("ontime_campus_cached", JSON.stringify(newCap));
+    }
+    syncUserSetting({
+      default_campus_name: newCap.name,
+      default_campus_coords: newCap.coords,
+    });
+  };
+
   const saveNewHomeBase = (newBase: BaseLocation) => {
     setHomeLocation(newBase);
     syncUserSetting({ home_address: newBase.name, home_coords: newBase.coords });
@@ -1653,18 +1702,38 @@ export default function Dashboard() {
 
   const completeEvent = async (id: string) => {
     const completedAt = new Date().toISOString();
+    const target = masterEvents.find((e) => e.id === id);
+
     setMasterEvents((prev) =>
       prev.map((e) =>
         e.id === id ? { ...e, status: "completed", completedAt } : e
       )
     );
-    if (authUser && supabase && isSupabaseConfigured) {
+
+    if (authUser && supabase && isSupabaseConfigured && target) {
       try {
-        await supabase
-          .from("events")
-          .update({ status: "completed", completed_at: completedAt })
-          .eq("id", id)
-          .eq("user_id", authUser.id);
+        const updatedEv = { ...target, status: "completed" as EventStatus, completedAt };
+        await supabase.from("events").upsert(
+          [{
+            id: updatedEv.id,
+            user_id: authUser.id,
+            title: updatedEv.title,
+            category: updatedEv.category,
+            date: updatedEv.date,
+            target_time: updatedEv.targetTime,
+            destination_name: updatedEv.destinationName,
+            destination_coords: updatedEv.destinationCoords,
+            origin_type: updatedEv.origin_type || "live",
+            origin_coords: updatedEv.origin_coords || null,
+            origin_address: updatedEv.origin_address || null,
+            buffer_minutes: updatedEv.bufferMinutes,
+            checklist: updatedEv.checklist,
+            status: "completed",
+            completed_at: completedAt,
+            transport_mode: updatedEv.transportMode || "driving",
+          }],
+          { onConflict: "id" }
+        );
       } catch (e) {
         console.warn("Supabase complete error:", e);
       }
@@ -4784,6 +4853,27 @@ export default function Dashboard() {
                 {isSavingRoutine ? <Loader2 className="w-4 h-4 animate-spin" /> : "Salva Lezione"}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* IN-APP STUDY / BREAK COMPLETION MODAL */}
+      {studyNotice && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-sm rounded-[32px] p-6 shadow-2xl text-center relative animate-in zoom-in-95 duration-300">
+            <div className="w-16 h-16 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center text-3xl mx-auto mb-4">
+              {studyNotice.icon}
+            </div>
+            <h3 className="text-xl font-bold text-slate-900 mb-2">{studyNotice.title}</h3>
+            <p className="text-xs text-slate-600 font-medium leading-relaxed mb-6 px-2">
+              {studyNotice.body}
+            </p>
+            <button
+              onClick={() => setStudyNotice(null)}
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white rounded-2xl py-3.5 font-bold text-sm shadow-md transition-transform active:scale-95"
+            >
+              {studyNotice.mode === "break" ? "Inizia Pausa Relax" : "Riprendi Studio"}
+            </button>
           </div>
         </div>
       )}
