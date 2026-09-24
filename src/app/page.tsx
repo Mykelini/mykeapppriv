@@ -243,6 +243,18 @@ export default function Dashboard() {
   // Header refresh state
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Default Campus State
+  type CampusLocation = {
+    name: string;
+    coords: { lat: number; lon: number };
+  };
+
+  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(null);
+  const [campusSearchQuery, setCampusSearchQuery] = useState("");
+  const [campusSuggestions, setCampusSuggestions] = useState<LocationSuggestion[]>([]);
+  const [isSearchingCampus, setIsSearchingCampus] = useState(false);
+  const [isEditingCampus, setIsEditingCampus] = useState(false);
+
   // Routines & Classes State
   type UserRoutine = {
     id: string;
@@ -269,17 +281,27 @@ export default function Dashboard() {
   const [newRoutineLocation, setNewRoutineLocation] = useState("");
   const [isSavingRoutine, setIsSavingRoutine] = useState(false);
 
-  // Study Focus Timer State
+  // Study Focus Timer State (Alternating Focus & Break Engine)
+  type StudyMode = "study" | "break";
+
   type ActiveStudyBlock = {
     subject: string;
-    initialMinutes: number;
+    studyMinutes: number;
+    breakMinutes: number;
+    mode: StudyMode;
     secondsLeft: number;
+    initialSeconds: number;
     isRunning: boolean;
+    isExpandedView?: boolean;
   };
 
   const [isStudyModalOpen, setIsStudyModalOpen] = useState(false);
   const [studySubject, setStudySubject] = useState("");
   const [selectedStudyDuration, setSelectedStudyDuration] = useState<number>(25);
+  const [selectedBreakDuration, setSelectedBreakDuration] = useState<number>(5);
+  const [customStudyInput, setCustomStudyInput] = useState<string>("25");
+  const [customBreakInput, setCustomBreakInput] = useState<string>("5");
+  const [studyPresetMode, setStudyPresetMode] = useState<"25_5" | "50_10" | "custom">("25_5");
   const [activeStudyBlock, setActiveStudyBlock] = useState<ActiveStudyBlock | null>(null);
 
   const saveStudySessionToSupabase = async (subject: string, minutes: number, completed: boolean) => {
@@ -306,24 +328,66 @@ export default function Dashboard() {
         if (prev.secondsLeft <= 1) {
           clearInterval(timer);
           playDepartureChime();
-          saveStudySessionToSupabase(prev.subject, prev.initialMinutes, true);
-          alert(`🎉 Sessione di studio per "${prev.subject}" completata! Ben fatto!`);
-          return null;
+          if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+            navigator.vibrate([300, 150, 300]);
+          }
+
+          if (prev.mode === "study") {
+            saveStudySessionToSupabase(prev.subject, prev.studyMinutes, true);
+            alert(`🎉 Sessione di studio per "${prev.subject}" completata! Ora inizia la pausa relax (${prev.breakMinutes} min).`);
+            const breakSecs = prev.breakMinutes * 60;
+            return {
+              ...prev,
+              mode: "break",
+              secondsLeft: breakSecs,
+              initialSeconds: breakSecs,
+              isRunning: true,
+            };
+          } else {
+            alert(`🌿 Pausa completata! Pronti per riprendere lo studio per "${prev.subject}"?`);
+            const studySecs = prev.studyMinutes * 60;
+            return {
+              ...prev,
+              mode: "study",
+              secondsLeft: studySecs,
+              initialSeconds: studySecs,
+              isRunning: false,
+            };
+          }
         }
         return { ...prev, secondsLeft: prev.secondsLeft - 1 };
       });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [activeStudyBlock?.isRunning]);
+  }, [activeStudyBlock?.isRunning, activeStudyBlock?.mode]);
 
   const handleStartStudyBlock = () => {
     const subj = studySubject.trim() || "Studio Generale";
+    let studyMins = selectedStudyDuration;
+    let breakMins = selectedBreakDuration;
+
+    if (studyPresetMode === "25_5") {
+      studyMins = 25;
+      breakMins = 5;
+    } else if (studyPresetMode === "50_10") {
+      studyMins = 50;
+      breakMins = 10;
+    } else {
+      studyMins = Math.max(1, parseInt(customStudyInput) || 25);
+      breakMins = Math.max(1, parseInt(customBreakInput) || 5);
+    }
+
+    const initialSecs = studyMins * 60;
     setActiveStudyBlock({
       subject: subj,
-      initialMinutes: selectedStudyDuration,
-      secondsLeft: selectedStudyDuration * 60,
+      studyMinutes: studyMins,
+      breakMinutes: breakMins,
+      mode: "study",
+      secondsLeft: initialSecs,
+      initialSeconds: initialSecs,
       isRunning: true,
+      isExpandedView: false,
     });
     setIsStudyModalOpen(false);
     setStudySubject("");
@@ -339,13 +403,13 @@ export default function Dashboard() {
     setActiveStudyBlock((prev: ActiveStudyBlock | null) => prev ? {
       ...prev,
       secondsLeft: prev.secondsLeft + 300,
-      initialMinutes: prev.initialMinutes + 5
+      initialSeconds: prev.initialSeconds + 300
     } : null);
   };
 
   const handleEndStudySession = () => {
     if (!activeStudyBlock) return;
-    const elapsedMins = Math.max(1, Math.round((activeStudyBlock.initialMinutes * 60 - activeStudyBlock.secondsLeft) / 60));
+    const elapsedMins = Math.max(1, Math.round((activeStudyBlock.initialSeconds - activeStudyBlock.secondsLeft) / 60));
     saveStudySessionToSupabase(activeStudyBlock.subject, elapsedMins, true);
     setActiveStudyBlock(null);
   };
@@ -873,6 +937,9 @@ export default function Dashboard() {
           if (settingsData.home_address && settingsData.home_coords) {
             setHomeLocation({ name: settingsData.home_address, coords: settingsData.home_coords });
           }
+          if (settingsData.default_campus_name && settingsData.default_campus_coords) {
+            setDefaultCampus({ name: settingsData.default_campus_name, coords: settingsData.default_campus_coords });
+          }
           if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
         }
@@ -1160,6 +1227,23 @@ export default function Dashboard() {
 
     return () => clearTimeout(timeoutId);
   }, [addressQuery, selectedDest]);
+
+  // Autocomplete effect for Setting Campus Location
+  useEffect(() => {
+    if (campusSearchQuery.trim().length < 2) {
+      setCampusSuggestions([]);
+      return;
+    }
+
+    setIsSearchingCampus(true);
+    const timeoutId = setTimeout(async () => {
+      const results = await fetchSuggestions(campusSearchQuery);
+      setCampusSuggestions(results);
+      setIsSearchingCampus(false);
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [campusSearchQuery]);
 
   // Autocomplete effect for Setting Home Base Location
   useEffect(() => {
@@ -2376,68 +2460,126 @@ export default function Dashboard() {
 
         {dateTab === "tutti" ? (
           <div className="px-5 flex flex-col gap-5 flex-1">
-            {/* ACTIVE FOCUS STUDY TIMER CARD */}
+            {/* PERSISTENT STICKY MINI-PLAYER & FULL FOCUS CARD */}
             {activeStudyBlock && (
-              <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white rounded-[24px] p-6 shadow-xl border border-indigo-500/30 relative overflow-hidden animate-in fade-in zoom-in-95 duration-300">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-                    <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-300">Focus Studio Attivo</span>
-                  </div>
-                  <span className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-200 text-xs font-semibold rounded-full border border-indigo-400/30">
-                    📖 {activeStudyBlock.subject}
-                  </span>
-                </div>
-
-                {/* Countdown Timer MM:SS */}
-                <div className="flex flex-col items-center justify-center my-3">
-                  <h2 className="text-5xl font-black tracking-tight font-mono text-white drop-shadow-md">
-                    {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
-                  </h2>
-                  <p className="text-xs font-medium text-indigo-300 mt-1">
-                    {activeStudyBlock.isRunning ? "Concentrazione in corso..." : "In Pausa"}
-                  </p>
-                </div>
-
-                {/* Progress Bar */}
-                {(() => {
-                  const totalSec = activeStudyBlock.initialMinutes * 60;
-                  const elapsed = totalSec - activeStudyBlock.secondsLeft;
-                  const pct = Math.min(100, Math.max(0, (elapsed / totalSec) * 100));
-                  return (
-                    <div className="w-full bg-indigo-950/80 rounded-full h-2 mb-5 overflow-hidden border border-indigo-700/50">
-                      <div 
-                        className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full transition-all duration-1000 ease-linear rounded-full"
-                        style={{ width: `${pct}%` }}
-                      />
+              activeStudyBlock.isExpandedView ? (
+                <div className={`rounded-[24px] p-6 shadow-xl relative overflow-hidden transition-all duration-300 ${
+                  activeStudyBlock.mode === "break"
+                    ? "bg-gradient-to-br from-emerald-900 via-slate-900 to-emerald-950 text-white border border-emerald-500/30"
+                    : "bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white border border-indigo-500/30"
+                }`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full animate-ping ${activeStudyBlock.mode === "break" ? "bg-emerald-400" : "bg-indigo-400"}`} />
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-slate-300">
+                        {activeStudyBlock.mode === "break" ? "🌿 Pausa Relax" : "📖 Focus Studio"}
+                      </span>
                     </div>
-                  );
-                })()}
+                    <button
+                      onClick={() => setActiveStudyBlock((prev: ActiveStudyBlock | null) => prev ? { ...prev, isExpandedView: false } : null)}
+                      className="text-xs font-semibold px-2.5 py-1 bg-white/10 hover:bg-white/20 rounded-full border border-white/10 transition-colors"
+                    >
+                      <span>Riduci ↙</span>
+                    </button>
+                  </div>
 
-                {/* Control Actions Row */}
-                <div className="flex items-center justify-center gap-2.5">
-                  <button
-                    onClick={togglePauseResumeStudy}
-                    className="px-4 py-2 bg-white/10 hover:bg-white/20 active:scale-95 rounded-xl text-xs font-bold text-white transition-all border border-white/10 flex items-center gap-1.5"
-                  >
-                    {activeStudyBlock.isRunning ? "⏸ Pausa" : "▶️ Riprendi"}
-                  </button>
+                  <div className="flex flex-col items-center justify-center my-3">
+                    <h2 className="text-5xl font-black tracking-tight font-mono text-white drop-shadow-md">
+                      {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
+                    </h2>
+                    <p className="text-xs font-medium text-slate-300 mt-1">
+                      {activeStudyBlock.mode === "break"
+                        ? (activeStudyBlock.isRunning ? "Pausa in corso... Rilassati!" : "Pausa in Sospeso")
+                        : (activeStudyBlock.isRunning ? "Concentrazione in corso..." : "In Pausa")}
+                    </p>
+                  </div>
 
-                  <button
-                    onClick={handleAdd5MinsToStudy}
-                    className="px-3 py-2 bg-indigo-600/50 hover:bg-indigo-600 active:scale-95 rounded-xl text-xs font-bold text-indigo-100 transition-all border border-indigo-500/40"
-                  >
-                    +5m
-                  </button>
+                  {(() => {
+                    const totalSec = activeStudyBlock.initialSeconds || 1500;
+                    const elapsed = totalSec - activeStudyBlock.secondsLeft;
+                    const pct = Math.min(100, Math.max(0, (elapsed / totalSec) * 100));
+                    return (
+                      <div className="w-full bg-slate-950/80 rounded-full h-2 mb-5 overflow-hidden border border-white/10">
+                        <div 
+                          className={`h-full transition-all duration-1000 ease-linear rounded-full ${
+                            activeStudyBlock.mode === "break"
+                              ? "bg-gradient-to-r from-emerald-500 to-teal-300"
+                              : "bg-gradient-to-r from-indigo-500 to-emerald-400"
+                          }`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    );
+                  })()}
 
-                  <button
-                    onClick={handleEndStudySession}
-                    className="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 text-red-200 active:scale-95 rounded-xl text-xs font-bold transition-all border border-red-500/30 flex items-center gap-1"
-                  >
-                    ⏹ Termina
-                  </button>
+                  <div className="flex items-center justify-center gap-2.5">
+                    <button
+                      onClick={togglePauseResumeStudy}
+                      className="px-4 py-2 bg-white/10 hover:bg-white/20 active:scale-95 rounded-xl text-xs font-bold text-white transition-all border border-white/10 flex items-center gap-1.5"
+                    >
+                      {activeStudyBlock.isRunning ? "⏸ Pausa" : "▶️ Riprendi"}
+                    </button>
+
+                    <button
+                      onClick={handleAdd5MinsToStudy}
+                      className="px-3 py-2 bg-white/10 hover:bg-white/20 active:scale-95 rounded-xl text-xs font-bold text-white transition-all border border-white/10"
+                    >
+                      +5m
+                    </button>
+
+                    <button
+                      onClick={handleEndStudySession}
+                      className="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 text-red-200 active:scale-95 rounded-xl text-xs font-bold transition-all border border-red-500/30 flex items-center gap-1"
+                    >
+                      ⏹ Termina
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                /* SLEEK STICKY MINI-PLAYER BANNER */
+                <div
+                  onClick={() => setActiveStudyBlock((prev: ActiveStudyBlock | null) => prev ? { ...prev, isExpandedView: true } : null)}
+                  className={`rounded-2xl p-3.5 shadow-md border flex items-center justify-between cursor-pointer transition-all duration-300 hover:scale-[1.01] ${
+                    activeStudyBlock.mode === "break"
+                      ? "bg-emerald-900 text-white border-emerald-700/60"
+                      : "bg-slate-900 text-white border-slate-800"
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0 pr-2">
+                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 animate-ping ${activeStudyBlock.mode === "break" ? "bg-emerald-400" : "bg-indigo-400"}`} />
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-sm text-white">
+                          {formatTimerMinutesSeconds(activeStudyBlock.secondsLeft)}
+                        </span>
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.2 rounded-md ${
+                          activeStudyBlock.mode === "break" ? "bg-emerald-800 text-emerald-200" : "bg-indigo-800 text-indigo-200"
+                        }`}>
+                          {activeStudyBlock.mode === "break" ? "Pausa Relax" : "Studio"}
+                        </span>
+                      </div>
+                      <span className="text-xs text-slate-300 font-medium truncate">
+                        {activeStudyBlock.subject}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={togglePauseResumeStudy}
+                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold text-white transition-colors"
+                    >
+                      {activeStudyBlock.isRunning ? "⏸" : "▶️"}
+                    </button>
+                    <button
+                      onClick={handleEndStudySession}
+                      className="px-2.5 py-1.5 bg-red-500/20 hover:bg-red-500/40 rounded-xl text-xs font-bold text-red-200 transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )
             )}
             {/* APPLE CALENDAR CARD */}
             <div className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100/60">
@@ -4341,9 +4483,76 @@ export default function Dashboard() {
               <Calendar className="w-5 h-5 text-blue-600" />
               <h2 className="text-xl font-bold text-slate-900">Orario Settimanale / Lezioni</h2>
             </div>
-            <p className="text-xs text-slate-500 font-medium mb-4">
+            <p className="text-xs text-slate-500 font-medium mb-3">
               Imposta le lezioni ricorrenti per ciascun giorno della settimana.
             </p>
+
+            {/* Sede Predefinita Campus Card */}
+            <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3 mb-4 shrink-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-base shrink-0">🎓</span>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-bold text-slate-800">Sede Predefinita (Università / Scuola)</h4>
+                    <p className="text-[11px] text-slate-600 font-medium truncate">
+                      {defaultCampus ? defaultCampus.name : "Nessuna sede salvata"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingCampus(!isEditingCampus)}
+                  className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shrink-0 shadow-xs"
+                >
+                  {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
+                </button>
+              </div>
+
+              {isEditingCampus && (
+                <div className="mt-3 pt-2.5 border-t border-blue-200/60 relative">
+                  <input
+                    type="text"
+                    placeholder="Cerca il tuo campus o università..."
+                    value={campusSearchQuery}
+                    onChange={(e) => setCampusSearchQuery(e.target.value)}
+                    className="w-full bg-white text-slate-800 border border-blue-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
+                  />
+                  {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-3 top-5" />}
+
+                  {campusSuggestions.length > 0 && (
+                    <div className="bg-white rounded-xl shadow-lg border border-slate-200 mt-1 max-h-40 overflow-y-auto z-[90] relative">
+                      {campusSuggestions.map((s, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className="w-full text-left px-3 py-2 hover:bg-blue-50 text-xs flex items-center gap-2 border-b border-slate-100 last:border-0"
+                          onClick={() => {
+                            const newCap = { name: s.name, coords: { lat: s.lat, lon: s.lon } };
+                            setDefaultCampus(newCap);
+                            setIsEditingCampus(false);
+                            setCampusSearchQuery("");
+                            setCampusSuggestions([]);
+                            if (authUser && supabase) {
+                              supabase.from("user_settings").upsert({
+                                user_id: authUser.id,
+                                default_campus_name: newCap.name,
+                                default_campus_coords: newCap.coords,
+                              }).then();
+                            }
+                          }}
+                        >
+                          <span>{s.icon || "🎓"}</span>
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{s.name}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{s.secondary}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Segmented Day Selector */}
             <div className="flex bg-slate-100 p-1 rounded-2xl mb-4 border border-slate-200/60 overflow-x-auto scrollbar-none shrink-0">
@@ -4425,23 +4634,23 @@ export default function Dashboard() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 block mb-1">Inizio</label>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-gray-500 uppercase">Orario Inizio</label>
                   <input
                     type="time"
                     value={newRoutineStartTime}
                     onChange={(e) => setNewRoutineStartTime(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 block mb-1">Fine</label>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-gray-500 uppercase">Orario Fine</label>
                   <input
                     type="time"
                     value={newRoutineEndTime}
                     onChange={(e) => setNewRoutineEndTime(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500"
+                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
               </div>
@@ -4490,11 +4699,11 @@ export default function Dashboard() {
             <div className="space-y-4">
               <div>
                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1 px-1">
-                  Materia
+                  Materia / Argomento
                 </label>
                 <input
                   type="text"
-                  placeholder="es. Fisica, Analisi, Tesi..."
+                  placeholder="es. Fisica, Analisi 1, Tesi..."
                   value={studySubject}
                   onChange={(e) => setStudySubject(e.target.value)}
                   className="w-full bg-slate-50 hover:bg-slate-100/80 focus:bg-white text-slate-800 border border-slate-200 focus:border-indigo-500 px-3.5 py-2.5 rounded-2xl text-sm font-medium outline-none transition-all"
@@ -4503,24 +4712,72 @@ export default function Dashboard() {
 
               <div>
                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-1">
-                  Durata Focus
+                  Intervalli Studio / Pausa
                 </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[25, 50, 90].map((mins) => (
-                    <button
-                      key={mins}
-                      type="button"
-                      onClick={() => setSelectedStudyDuration(mins)}
-                      className={`py-2.5 rounded-2xl text-xs font-bold border transition-all ${
-                        selectedStudyDuration === mins
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                      }`}
-                    >
-                      {mins} min
-                    </button>
-                  ))}
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setStudyPresetMode("25_5")}
+                    className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
+                      studyPresetMode === "25_5"
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    ⚡ 25m / 5m Pausa
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStudyPresetMode("50_10")}
+                    className={`py-2.5 px-3 rounded-2xl text-xs font-bold border transition-all text-center ${
+                      studyPresetMode === "50_10"
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    🔥 50m / 10m Pausa
+                  </button>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => setStudyPresetMode("custom")}
+                  className={`w-full py-2 px-3 rounded-2xl text-xs font-bold border transition-all text-center mb-2 ${
+                    studyPresetMode === "custom"
+                      ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                      : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                  }`}
+                >
+                  ⚙️ Personalizzato
+                </button>
+
+                {studyPresetMode === "custom" && (
+                  <div className="grid grid-cols-2 gap-2 p-3 bg-indigo-50/60 border border-indigo-100 rounded-2xl animate-in fade-in">
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-700 block mb-1">Studio (min)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="240"
+                        value={customStudyInput}
+                        onChange={(e) => setCustomStudyInput(e.target.value)}
+                        className="w-full bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/30"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-emerald-700 block mb-1">Pausa (min)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        value={customBreakInput}
+                        onChange={(e) => setCustomBreakInput(e.target.value)}
+                        className="w-full bg-white border border-emerald-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/30"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <button
