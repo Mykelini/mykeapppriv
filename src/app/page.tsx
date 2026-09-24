@@ -1365,16 +1365,15 @@ export default function Dashboard() {
   const saveCampusSetting = async (newCap: CampusLocation) => {
     setDefaultCampus(newCap);
     
-    // 1. Immediate local persistence
     if (typeof window !== "undefined") {
+      localStorage.setItem("ontime_default_campus_global", JSON.stringify(newCap));
+      localStorage.setItem("ontime_campus_cached", JSON.stringify(newCap));
       if (authUser?.id) {
         localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(newCap));
         localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(newCap));
       }
-      localStorage.setItem("ontime_campus_cached", JSON.stringify(newCap));
     }
 
-    // 2. Zero-schema cloud persistence via Supabase Auth Metadata
     if (authUser && supabase && isSupabaseConfigured) {
       try {
         const { error } = await supabase.auth.updateUser({
@@ -1383,7 +1382,6 @@ export default function Dashboard() {
         if (error) {
           console.error("Error saving campus metadata:", error);
         }
-        // Also sync to user_settings DB table
         syncUserSetting({
           default_campus_name: newCap.name,
           default_campus_coords: newCap.coords,
@@ -4774,17 +4772,10 @@ export default function Dashboard() {
                           className="w-full text-left px-3 py-2 hover:bg-blue-50 text-xs flex items-center gap-2 border-b border-slate-100 last:border-0"
                           onClick={() => {
                             const newCap = { name: s.name, coords: { lat: s.lat, lon: s.lon } };
-                            setDefaultCampus(newCap);
+                            saveCampusSetting(newCap);
                             setIsEditingCampus(false);
                             setCampusSearchQuery("");
                             setCampusSuggestions([]);
-                            if (authUser && supabase) {
-                              supabase.from("user_settings").upsert({
-                                user_id: authUser.id,
-                                default_campus_name: newCap.name,
-                                default_campus_coords: newCap.coords,
-                              }).then();
-                            }
                           }}
                         >
                           <span>{s.icon || "🎓"}</span>
