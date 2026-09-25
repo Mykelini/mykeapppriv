@@ -774,7 +774,9 @@ export default function Dashboard() {
       if (storedMapbox) setMapboxToken(storedMapbox);
 
       // Fast-Initial Campus Cache read
-      const cachedCampus = localStorage.getItem("ontime_campus_cached");
+      const cachedCampus = localStorage.getItem("ontime_campus_saved") ||
+                           localStorage.getItem("ontime_campus_cached") ||
+                           localStorage.getItem("ontime_default_campus_global");
       if (cachedCampus) {
         try {
           setDefaultCampus(JSON.parse(cachedCampus));
@@ -838,9 +840,17 @@ export default function Dashboard() {
       const user = session?.user ?? null;
       setAuthUser(user);
       if (user && typeof window !== "undefined") {
-        const userCached = localStorage.getItem(`ontime_campus_${user.id}`);
+        const userCached = localStorage.getItem(`ontime_campus_${user.id}`) ||
+                           localStorage.getItem(`ontime_default_campus_${user.id}`) ||
+                           localStorage.getItem("ontime_campus_saved") ||
+                           localStorage.getItem("ontime_campus_cached");
         if (userCached) {
           try { setDefaultCampus(JSON.parse(userCached)); } catch (e) {}
+        } else if (user.user_metadata?.default_campus) {
+          const metaCap = user.user_metadata.default_campus;
+          if (metaCap?.name && metaCap?.coords) {
+            setDefaultCampus(metaCap);
+          }
         }
       }
       setAuthChecking(false);
@@ -1386,6 +1396,7 @@ export default function Dashboard() {
     setDefaultCampus(newCap);
     
     if (typeof window !== "undefined") {
+      localStorage.setItem("ontime_campus_saved", JSON.stringify(newCap));
       localStorage.setItem("ontime_default_campus_global", JSON.stringify(newCap));
       localStorage.setItem("ontime_campus_cached", JSON.stringify(newCap));
       if (authUser?.id) {
@@ -1394,18 +1405,26 @@ export default function Dashboard() {
       }
     }
 
-    if (authUser && supabase && isSupabaseConfigured) {
+    if (supabase && isSupabaseConfigured) {
       try {
-        const { error } = await supabase.auth.updateUser({
-          data: { default_campus: newCap }
-        });
-        if (error) {
-          console.error("Error saving campus metadata:", error);
+        const activeUser = authUser || (await supabase.auth.getUser()).data?.user;
+        if (activeUser) {
+          if (typeof window !== "undefined") {
+            localStorage.setItem(`ontime_default_campus_${activeUser.id}`, JSON.stringify(newCap));
+            localStorage.setItem(`ontime_campus_${activeUser.id}`, JSON.stringify(newCap));
+          }
+
+          const { error } = await supabase.auth.updateUser({
+            data: { default_campus: newCap }
+          });
+          if (error) {
+            console.error("Error saving campus metadata:", error);
+          }
+          await syncUserSetting({
+            default_campus_name: newCap.name,
+            default_campus_coords: newCap.coords,
+          });
         }
-        syncUserSetting({
-          default_campus_name: newCap.name,
-          default_campus_coords: newCap.coords,
-        });
       } catch (err) {
         console.error("Save campus error:", err);
       }
@@ -1440,23 +1459,31 @@ export default function Dashboard() {
   const removeCampusSetting = async () => {
     setDefaultCampus(null);
     if (typeof window !== "undefined") {
+      localStorage.removeItem("ontime_campus_saved");
+      localStorage.removeItem("ontime_campus_cached");
+      localStorage.removeItem("ontime_default_campus_global");
+      localStorage.removeItem("ontime_campus_fallback");
       if (authUser?.id) {
         localStorage.removeItem(`ontime_default_campus_${authUser.id}`);
         localStorage.removeItem(`ontime_campus_${authUser.id}`);
       }
-      localStorage.removeItem("ontime_campus_cached");
-      localStorage.removeItem("ontime_default_campus_global");
-      localStorage.removeItem("ontime_campus_fallback");
     }
-    if (authUser && supabase && isSupabaseConfigured) {
+    if (supabase && isSupabaseConfigured) {
       try {
-        await supabase.auth.updateUser({
-          data: { default_campus: null }
-        });
-        await syncUserSetting({
-          default_campus_name: null,
-          default_campus_coords: null,
-        });
+        const activeUser = authUser || (await supabase.auth.getUser()).data?.user;
+        if (activeUser) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(`ontime_default_campus_${activeUser.id}`);
+            localStorage.removeItem(`ontime_campus_${activeUser.id}`);
+          }
+          await supabase.auth.updateUser({
+            data: { default_campus: null }
+          });
+          await syncUserSetting({
+            default_campus_name: null,
+            default_campus_coords: null,
+          });
+        }
       } catch (err) {
         console.error("Remove campus error:", err);
       }
