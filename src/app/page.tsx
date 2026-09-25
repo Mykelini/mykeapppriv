@@ -110,7 +110,28 @@ const getWeatherInfo = (code: number, temp: number): WeatherData => {
   return { temp: roundedTemp, code, label, icon, isRainy };
 };
 
-// Robust Real-Time Route Duration Calculation (Mapbox Traffic + Calibrated OSRM Fallback)
+// Global Default Campus Helpers & Event Dispatcher
+export const getStoredCampus = (): CampusLocation | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const data = localStorage.getItem('ontime_saved_campus');
+    return data ? JSON.parse(data) : null;
+  } catch (e) {
+    console.error("Error reading stored campus:", e);
+    return null;
+  }
+};
+
+export const setStoredCampus = (campusData: CampusLocation | null) => {
+  if (typeof window === 'undefined') return;
+  if (campusData) {
+    localStorage.setItem('ontime_saved_campus', JSON.stringify(campusData));
+  } else {
+    localStorage.removeItem('ontime_saved_campus');
+  }
+  window.dispatchEvent(new Event('ontime_campus_updated'));
+};
+
 const fetchOsrmRouteMins = async (
   startCoords: { lat: number; lon: number },
   destCoords: { lat: number; lon: number },
@@ -250,20 +271,24 @@ export default function Dashboard() {
     coords: { lat: number; lon: number };
   };
 
-  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(() => {
-    if (typeof window !== "undefined") {
-      const local = localStorage.getItem("ontime_saved_campus");
-      if (local) {
-        try {
-          const parsed = JSON.parse(local);
-          if (parsed?.name && parsed?.coords) return parsed;
-        } catch (e) {
-          console.error("Error parsing local campus:", e);
-        }
-      }
-    }
-    return null;
-  });
+  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(getStoredCampus);
+
+  // Wire to custom and storage events for instant cross-component sync
+  useEffect(() => {
+    const syncCampus = () => {
+      const stored = getStoredCampus();
+      setDefaultCampus(stored);
+    };
+
+    window.addEventListener('ontime_campus_updated', syncCampus);
+    window.addEventListener('storage', syncCampus);
+    syncCampus();
+
+    return () => {
+      window.removeEventListener('ontime_campus_updated', syncCampus);
+      window.removeEventListener('storage', syncCampus);
+    };
+  }, []);
   const [campusSearchQuery, setCampusSearchQuery] = useState("");
   const [campusSuggestions, setCampusSuggestions] = useState<LocationSuggestion[]>([]);
   const [isSearchingCampus, setIsSearchingCampus] = useState(false);
@@ -1403,9 +1428,8 @@ export default function Dashboard() {
   };
 
   const saveCampusSetting = async (campusData: CampusLocation) => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ontime_saved_campus", JSON.stringify(campusData));
-    }
+    console.log("Saving campus confirmed:", campusData);
+    setStoredCampus(campusData);
     setDefaultCampus(campusData);
 
     if (supabase && isSupabaseConfigured) {
@@ -1450,9 +1474,8 @@ export default function Dashboard() {
   };
 
   const removeCampusSetting = async () => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("ontime_saved_campus");
-    }
+    console.log("Removing campus confirmed");
+    setStoredCampus(null);
     setDefaultCampus(null);
 
     if (supabase && isSupabaseConfigured) {
