@@ -72,6 +72,15 @@ type WeatherData = {
   isRainy: boolean;
 };
 
+export interface CampusLocation {
+  name: string;
+  coords?: {
+    lat: number;
+    lon: number;
+  } | null;
+  address?: string;
+}
+
 const categoryStyles: Record<EventCategory, string> = {
   Sport: "border-orange-500 text-orange-700 bg-orange-500/10",
   Lavoro: "border-emerald-500 text-emerald-700 bg-emerald-500/10",
@@ -266,11 +275,6 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Default Campus State
-  type CampusLocation = {
-    name: string;
-    coords: { lat: number; lon: number };
-  };
-
   const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(getStoredCampus);
 
   // Wire to custom and storage events for instant cross-component sync
@@ -1260,7 +1264,7 @@ export default function Dashboard() {
         date: dateStr,
         targetTime: routine.start_time || "09:00",
         destinationName: routine.location_name || routine.aula || (defaultCampus ? defaultCampus.name : "Università / Scuola"),
-        destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
+        destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus?.coords?.lat && defaultCampus?.coords?.lon ? { lat: defaultCampus.coords.lat, lon: defaultCampus.coords.lon } : { lat: 0, lon: 0 }),
         origin_type: "live" as const,
         origin_coords: null,
         origin_address: null,
