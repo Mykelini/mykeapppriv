@@ -945,13 +945,21 @@ export default function Dashboard() {
               localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(cap));
               localStorage.setItem("ontime_campus_cached", JSON.stringify(cap));
             }
+          } else if (settingsData.default_campus_name === null) {
+            // Explicitly removed by user
+            setDefaultCampus(null);
+            if (typeof window !== "undefined") {
+              localStorage.removeItem(`ontime_default_campus_${authUser.id}`);
+              localStorage.removeItem(`ontime_campus_${authUser.id}`);
+              localStorage.removeItem("ontime_campus_cached");
+              localStorage.removeItem("ontime_default_campus_global");
+              localStorage.removeItem("ontime_campus_fallback");
+            }
           }
           if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
-        }
-
-        // Auto-heal fallback: if DB setting doesn't have campus yet, check auth metadata or localStorage
-        if (!settingsData?.default_campus_name) {
+        } else if (!settingsData) {
+          // Auto-heal fallback only if user_settings record does not exist at all yet
           let capToUse: CampusLocation | null = null;
           if (authUser?.user_metadata?.default_campus) {
             capToUse = authUser.user_metadata.default_campus;
@@ -1451,13 +1459,15 @@ export default function Dashboard() {
         localStorage.removeItem(`ontime_campus_${authUser.id}`);
       }
       localStorage.removeItem("ontime_campus_cached");
+      localStorage.removeItem("ontime_default_campus_global");
+      localStorage.removeItem("ontime_campus_fallback");
     }
     if (authUser && supabase && isSupabaseConfigured) {
       try {
         await supabase.auth.updateUser({
           data: { default_campus: null }
         });
-        syncUserSetting({
+        await syncUserSetting({
           default_campus_name: null,
           default_campus_coords: null,
         });
