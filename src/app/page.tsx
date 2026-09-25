@@ -250,7 +250,21 @@ export default function Dashboard() {
     coords: { lat: number; lon: number };
   };
 
-  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(null);
+  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("ontime_user_campus") ||
+                    localStorage.getItem("ontime_campus_saved") ||
+                    localStorage.getItem("ontime_campus_cached") ||
+                    localStorage.getItem("ontime_default_campus_global");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed?.name && parsed?.coords) return parsed;
+        } catch (e) {}
+      }
+    }
+    return null;
+  });
   const [campusSearchQuery, setCampusSearchQuery] = useState("");
   const [campusSuggestions, setCampusSuggestions] = useState<LocationSuggestion[]>([]);
   const [isSearchingCampus, setIsSearchingCampus] = useState(false);
@@ -963,8 +977,11 @@ export default function Dashboard() {
         }
 
         if (!resolvedCampus && typeof window !== "undefined") {
-          const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) ||
+          const cached = localStorage.getItem(`ontime_user_campus_${authUser.id}`) ||
+                         localStorage.getItem(`ontime_campus_${authUser.id}`) ||
                          localStorage.getItem(`ontime_default_campus_${authUser.id}`) ||
+                         localStorage.getItem("ontime_user_campus") ||
+                         localStorage.getItem("ontime_campus_saved") ||
                          localStorage.getItem("ontime_campus_cached") ||
                          localStorage.getItem("ontime_default_campus_global");
           if (cached) {
