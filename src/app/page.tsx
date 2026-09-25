@@ -265,6 +265,7 @@ export default function Dashboard() {
     start_time: string;
     end_time: string;
     location_name: string;
+    aula?: string;
     location_coords?: { lat: number; lon: number };
     transport_mode?: TransportMode;
     buffer_minutes?: number;
