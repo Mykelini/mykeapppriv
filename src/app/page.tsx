@@ -937,56 +937,42 @@ export default function Dashboard() {
           if (settingsData.home_address && settingsData.home_coords) {
             setHomeLocation({ name: settingsData.home_address, coords: settingsData.home_coords });
           }
-          if (settingsData.default_campus_name && settingsData.default_campus_coords) {
-            const cap = { name: settingsData.default_campus_name, coords: settingsData.default_campus_coords };
-            setDefaultCampus(cap);
-            if (typeof window !== "undefined") {
-              localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(cap));
-              localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(cap));
-              localStorage.setItem("ontime_campus_cached", JSON.stringify(cap));
-            }
-          } else if (settingsData.default_campus_name === null) {
-            // Explicitly removed by user
-            setDefaultCampus(null);
-            if (typeof window !== "undefined") {
-              localStorage.removeItem(`ontime_default_campus_${authUser.id}`);
-              localStorage.removeItem(`ontime_campus_${authUser.id}`);
-              localStorage.removeItem("ontime_campus_cached");
-              localStorage.removeItem("ontime_default_campus_global");
-              localStorage.removeItem("ontime_campus_fallback");
-            }
-          }
           if (settingsData.default_buffer) setDefaultSafetyBuffer(settingsData.default_buffer);
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
-        } else if (!settingsData) {
-          // Auto-heal fallback only if user_settings record does not exist at all yet
-          let capToUse: CampusLocation | null = null;
-          if (authUser?.user_metadata?.default_campus) {
-            capToUse = authUser.user_metadata.default_campus;
-          }
-          if (!capToUse && typeof window !== "undefined") {
-            const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) ||
-                           localStorage.getItem(`ontime_default_campus_${authUser.id}`) ||
-                           localStorage.getItem("ontime_campus_cached") ||
-                           localStorage.getItem("ontime_default_campus_global");
-            if (cached) {
-              try { capToUse = JSON.parse(cached); } catch (e) {}
-            }
-          }
+        }
 
-          if (capToUse?.name && capToUse?.coords) {
-            setDefaultCampus(capToUse);
-            if (typeof window !== "undefined") {
-              localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(capToUse));
-              localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(capToUse));
-              localStorage.setItem("ontime_campus_cached", JSON.stringify(capToUse));
-            }
-            client.from("user_settings").upsert({
-              user_id: authUser.id,
-              default_campus_name: capToUse.name,
-              default_campus_coords: capToUse.coords,
-              updated_at: new Date().toISOString()
-            }, { onConflict: "user_id" }).then();
+        // Robust Campus Resolution (Priority: DB -> Auth Metadata -> LocalStorage)
+        let resolvedCampus: CampusLocation | null = null;
+        if (settingsData?.default_campus_name && settingsData?.default_campus_coords) {
+          resolvedCampus = { name: settingsData.default_campus_name, coords: settingsData.default_campus_coords };
+        } else if (authUser?.user_metadata?.default_campus) {
+          const metaCap = authUser.user_metadata.default_campus;
+          if (metaCap?.name && metaCap?.coords) {
+            resolvedCampus = metaCap;
+          }
+        }
+
+        if (!resolvedCampus && typeof window !== "undefined") {
+          const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) ||
+                         localStorage.getItem(`ontime_default_campus_${authUser.id}`) ||
+                         localStorage.getItem("ontime_campus_cached") ||
+                         localStorage.getItem("ontime_default_campus_global");
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (parsed?.name && parsed?.coords) {
+                resolvedCampus = parsed;
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (resolvedCampus) {
+          setDefaultCampus(resolvedCampus);
+          if (typeof window !== "undefined") {
+            localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(resolvedCampus));
+            localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(resolvedCampus));
+            localStorage.setItem("ontime_campus_cached", JSON.stringify(resolvedCampus));
           }
         }
 
