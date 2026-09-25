@@ -898,45 +898,11 @@ export default function Dashboard() {
           transportMode: (row.transport_mode as TransportMode) || "driving",
         }));
 
-        // Fetch user routines and auto-spawn for today
+        // Fetch user routines
         try {
           const { data: routineData } = await supabase.from("user_routines").select("*").eq("user_id", user.id);
           if (routineData) {
             setUserRoutines(routineData);
-            const todayStr = format(new Date(), "yyyy-MM-dd");
-            const currentDayOfWeek = new Date().getDay(); // 0 = Sunday, 1 = Monday
-            
-            routineData.forEach((routine: any) => {
-              // Assume routine runs every day or check a days array if present
-              const runsToday = !routine.days || routine.days.includes(currentDayOfWeek);
-              
-              if (runsToday) {
-                // Check if we already spawned it today in events table (prevent duplicate)
-                const alreadyExists = synced.some(e =>
-                  e.date === todayStr &&
-                  (e.id === `routine_${routine.id}_${todayStr}` || e.title.toLowerCase() === routine.title.toLowerCase())
-                );
-                
-                if (!alreadyExists) {
-                  synced.push({
-                    id: `routine_${routine.id}_${todayStr}`,
-                    title: routine.title,
-                    category: "Lavoro",
-                    date: todayStr,
-                    targetTime: routine.start_time || "09:00",
-                    destinationName: routine.location_name || routine.aula || (defaultCampus ? defaultCampus.name : "Università / Scuola"),
-                    destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
-                    origin_type: "live",
-                    origin_coords: null,
-                    origin_address: null,
-                    bufferMinutes: 10,
-                    checklist: Array.isArray(routine.checklist) ? routine.checklist : [],
-                    status: "active",
-                    transportMode: "driving"
-                  });
-                }
-              }
-            });
           }
         } catch (err) {
           console.error("Routines fetch error", err);
@@ -983,22 +949,35 @@ export default function Dashboard() {
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
         }
 
-        // Auto-heal: if DB setting doesn't have campus yet but localStorage has it, sync to DB
-        if (!settingsData?.default_campus_name && typeof window !== "undefined") {
-          const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) || localStorage.getItem("ontime_campus_cached");
-          if (cached) {
-            try {
-              const cap = JSON.parse(cached);
-              if (cap?.name && cap?.coords) {
-                setDefaultCampus(cap);
-                client.from("user_settings").upsert({
-                  user_id: authUser.id,
-                  default_campus_name: cap.name,
-                  default_campus_coords: cap.coords,
-                  updated_at: new Date().toISOString()
-                }, { onConflict: "user_id" }).then();
-              }
-            } catch (e) {}
+        // Auto-heal fallback: if DB setting doesn't have campus yet, check auth metadata or localStorage
+        if (!settingsData?.default_campus_name) {
+          let capToUse: CampusLocation | null = null;
+          if (authUser?.user_metadata?.default_campus) {
+            capToUse = authUser.user_metadata.default_campus;
+          }
+          if (!capToUse && typeof window !== "undefined") {
+            const cached = localStorage.getItem(`ontime_campus_${authUser.id}`) ||
+                           localStorage.getItem(`ontime_default_campus_${authUser.id}`) ||
+                           localStorage.getItem("ontime_campus_cached") ||
+                           localStorage.getItem("ontime_default_campus_global");
+            if (cached) {
+              try { capToUse = JSON.parse(cached); } catch (e) {}
+            }
+          }
+
+          if (capToUse?.name && capToUse?.coords) {
+            setDefaultCampus(capToUse);
+            if (typeof window !== "undefined") {
+              localStorage.setItem(`ontime_default_campus_${authUser.id}`, JSON.stringify(capToUse));
+              localStorage.setItem(`ontime_campus_${authUser.id}`, JSON.stringify(capToUse));
+              localStorage.setItem("ontime_campus_cached", JSON.stringify(capToUse));
+            }
+            client.from("user_settings").upsert({
+              user_id: authUser.id,
+              default_campus_name: capToUse.name,
+              default_campus_coords: capToUse.coords,
+              updated_at: new Date().toISOString()
+            }, { onConflict: "user_id" }).then();
           }
         }
 
@@ -1216,19 +1195,65 @@ export default function Dashboard() {
     recalculateRoutes();
   }, [currentLoc, mapboxToken]);
 
+  // Helper to project routines strictly matching day_of_week for any given dateStr (yyyy-MM-dd)
+  const getEffectiveEventsForDate = (dateStr: string): MasterEvent[] => {
+    const explicitEvents = masterEvents.filter((e) => e.date === dateStr);
+
+    // Calculate day_of_week: 0 = Dom, 1 = Lun, 2 = Mar, 3 = Mer, 4 = Gio, 5 = Ven, 6 = Sab
+    const [yr, mo, dy] = dateStr.split("-").map(Number);
+    const dateObj = new Date(yr, mo - 1, dy);
+    const dayOfWeek = dateObj.getDay();
+
+    const matchingRoutines = userRoutines.filter((r) => Number(r.day_of_week) === dayOfWeek);
+
+    const projectedRoutines: MasterEvent[] = matchingRoutines
+      .filter((routine) => {
+        const routineId = `routine_${routine.id}_${dateStr}`;
+        return !explicitEvents.some(
+          (e) => e.id === routineId || e.title.toLowerCase() === routine.title.toLowerCase()
+        );
+      })
+      .map((routine) => ({
+        id: `routine_${routine.id}_${dateStr}`,
+        title: routine.title,
+        category: "Lavoro" as EventCategory,
+        date: dateStr,
+        targetTime: routine.start_time || "09:00",
+        destinationName: routine.location_name || routine.aula || (defaultCampus ? defaultCampus.name : "Università / Scuola"),
+        destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
+        origin_type: "live" as const,
+        origin_coords: null,
+        origin_address: null,
+        bufferMinutes: 10,
+        checklist: Array.isArray(routine.checklist) ? routine.checklist : [],
+        status: "active" as EventStatus,
+        transportMode: "driving" as TransportMode
+      }));
+
+    return [...explicitEvents, ...projectedRoutines];
+  };
+
   // Filter Active vs Completed
-  const activeEvents = masterEvents.filter((e) => e.status === "active");
   const completedEvents = masterEvents.filter((e) => e.status === "completed");
 
   // Date Filtering
   const todayStr = format(now, "yyyy-MM-dd");
   const tomorrowStr = format(addDays(now, 1), "yyyy-MM-dd");
 
-  const filteredActiveEvents = activeEvents.filter((e) => {
-    if (dateTab === "oggi") return e.date === todayStr;
-    if (dateTab === "domani") return e.date === tomorrowStr;
-    return true; // tutti
-  });
+  const filteredActiveEvents = (() => {
+    if (dateTab === "oggi") {
+      return getEffectiveEventsForDate(todayStr).filter((e) => e.status === "active");
+    }
+    if (dateTab === "domani") {
+      return getEffectiveEventsForDate(tomorrowStr).filter((e) => e.status === "active");
+    }
+    // "tutti": combine active masterEvents + projected routines for today and tomorrow
+    const todayEff = getEffectiveEventsForDate(todayStr).filter((e) => e.status === "active");
+    const tomorrowEff = getEffectiveEventsForDate(tomorrowStr).filter((e) => e.status === "active");
+    const existingIds = new Set([...todayEff, ...tomorrowEff].map(e => e.id));
+    const otherActive = masterEvents.filter((e) => e.status === "active" && !existingIds.has(e.id));
+    return [...todayEff, ...tomorrowEff, ...otherActive];
+  })();
 
   // Sort by target datetime
   const getEventDateTime = (ev: MasterEvent) => new Date(`${ev.date}T${ev.targetTime}:00`);
@@ -1390,6 +1415,31 @@ export default function Dashboard() {
         console.error("Save campus error:", err);
       }
     }
+  };
+
+  const handleManualSaveCampus = async () => {
+    const query = campusSearchQuery.trim();
+    if (!query) return;
+    setIsSearchingCampus(true);
+    let coords = { lat: 39.36, lon: 16.22 };
+    try {
+      const geoResults = await fetchSuggestions(query);
+      if (geoResults.length > 0) {
+        coords = { lat: geoResults[0].lat, lon: geoResults[0].lon };
+        await saveCampusSetting({ name: geoResults[0].name, coords });
+      } else if (currentLoc) {
+        coords = currentLoc;
+        await saveCampusSetting({ name: query, coords });
+      } else {
+        await saveCampusSetting({ name: query, coords });
+      }
+    } catch (e) {
+      await saveCampusSetting({ name: query, coords });
+    }
+    setIsSearchingCampus(false);
+    setIsEditingCampus(false);
+    setCampusSearchQuery("");
+    setCampusSuggestions([]);
   };
 
   const removeCampusSetting = async () => {
@@ -1744,40 +1794,47 @@ export default function Dashboard() {
 
   const completeEvent = async (id: string) => {
     const completedAt = new Date().toISOString();
-    const target = masterEvents.find((e) => e.id === id);
+    let target = masterEvents.find((e) => e.id === id);
 
-    setMasterEvents((prev) =>
-      prev.map((e) =>
-        e.id === id ? { ...e, status: "completed", completedAt } : e
-      )
-    );
+    if (!target) {
+      const allProjected = [
+        ...getEffectiveEventsForDate(todayStr),
+        ...getEffectiveEventsForDate(tomorrowStr),
+        ...getEffectiveEventsForDate(selectedCalendarDate),
+      ];
+      target = allProjected.find((e) => e.id === id);
+    }
 
-    if (authUser && supabase && isSupabaseConfigured && target) {
-      try {
-        const updatedEv = { ...target, status: "completed" as EventStatus, completedAt };
-        await supabase.from("events").upsert(
-          [{
-            id: updatedEv.id,
-            user_id: authUser.id,
-            title: updatedEv.title,
-            category: updatedEv.category,
-            date: updatedEv.date,
-            target_time: updatedEv.targetTime,
-            destination_name: updatedEv.destinationName,
-            destination_coords: updatedEv.destinationCoords,
-            origin_type: updatedEv.origin_type || "live",
-            origin_coords: updatedEv.origin_coords || null,
-            origin_address: updatedEv.origin_address || null,
-            buffer_minutes: updatedEv.bufferMinutes,
-            checklist: updatedEv.checklist,
-            status: "completed",
-            completed_at: completedAt,
-            transport_mode: updatedEv.transportMode || "driving",
-          }],
-          { onConflict: "id" }
-        );
-      } catch (e) {
-        console.warn("Supabase complete error:", e);
+    if (target) {
+      const updatedEv = { ...target, status: "completed" as EventStatus, completedAt };
+      setMasterEvents((prev) => [...prev.filter((e) => e.id !== id), updatedEv]);
+
+      if (authUser && supabase && isSupabaseConfigured) {
+        try {
+          await supabase.from("events").upsert(
+            [{
+              id: updatedEv.id,
+              user_id: authUser.id,
+              title: updatedEv.title,
+              category: updatedEv.category,
+              date: updatedEv.date,
+              target_time: updatedEv.targetTime,
+              destination_name: updatedEv.destinationName,
+              destination_coords: updatedEv.destinationCoords,
+              origin_type: updatedEv.origin_type || "live",
+              origin_coords: updatedEv.origin_coords || null,
+              origin_address: updatedEv.origin_address || null,
+              buffer_minutes: updatedEv.bufferMinutes,
+              checklist: updatedEv.checklist,
+              status: "completed",
+              completed_at: completedAt,
+              transport_mode: updatedEv.transportMode || "driving",
+            }],
+            { onConflict: "id" }
+          );
+        } catch (e) {
+          console.warn("Supabase complete error:", e);
+        }
       }
     }
   };
@@ -2778,7 +2835,7 @@ export default function Dashboard() {
                       const dayStr = format(day, "yyyy-MM-dd");
                       const isSelected = selectedCalendarDate === dayStr;
                       const isToday = dayStr === todayStr;
-                      const dayEvents = masterEvents.filter((e) => e.date === dayStr && e.status === "active");
+                      const dayEvents = getEffectiveEventsForDate(dayStr).filter((e) => e.status === "active");
 
                       return (
                         <button
@@ -2840,8 +2897,7 @@ export default function Dashboard() {
               </div>
 
               {(() => {
-                const selectedDayEvents = masterEvents
-                  .filter((e) => e.date === selectedCalendarDate)
+                const selectedDayEvents = getEffectiveEventsForDate(selectedCalendarDate)
                   .sort((a, b) => a.targetTime.localeCompare(b.targetTime));
 
                 if (selectedDayEvents.length === 0) {
@@ -4754,14 +4810,29 @@ export default function Dashboard() {
 
               {isEditingCampus && (
                 <div className="mt-3 pt-2.5 border-t border-blue-200/60 relative">
-                  <input
-                    type="text"
-                    placeholder="Cerca il tuo campus o università..."
-                    value={campusSearchQuery}
-                    onChange={(e) => setCampusSearchQuery(e.target.value)}
-                    className="w-full bg-white text-slate-800 border border-blue-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
-                  />
-                  {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-3 top-5" />}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="Cerca o inserisci indirizzo/sede..."
+                      value={campusSearchQuery}
+                      onChange={(e) => setCampusSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleManualSaveCampus();
+                        }
+                      }}
+                      className="flex-1 bg-white text-slate-800 border border-blue-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleManualSaveCampus}
+                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-all shrink-0 shadow-xs"
+                    >
+                      Salva
+                    </button>
+                  </div>
+                  {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-14 top-5 pointer-events-none" />}
 
                   {campusSuggestions.length > 0 && (
                     <div className="bg-white rounded-xl shadow-lg border border-slate-200 mt-1 max-h-40 overflow-y-auto z-[90] relative">
