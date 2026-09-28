@@ -1270,22 +1270,34 @@ export default function Dashboard() {
           (e) => e.id === routineId || e.title.toLowerCase() === routine.title.toLowerCase()
         );
       })
-      .map((routine) => ({
-        id: `routine_${routine.id}_${dateStr}`,
-        title: routine.title,
-        category: "Lavoro" as EventCategory,
-        date: dateStr,
-        targetTime: routine.start_time || "09:00",
-        destinationName: routine.location_name || routine.aula || (defaultCampus ? defaultCampus.name : "Università / Scuola"),
-        destinationCoords: routine.location_coords?.lat ? routine.location_coords : (defaultCampus?.coords?.lat && defaultCampus?.coords?.lon ? { lat: defaultCampus.coords.lat, lon: defaultCampus.coords.lon } : { lat: 0, lon: 0 }),
-        origin_type: "live" as const,
-        origin_coords: null,
-        origin_address: null,
-        bufferMinutes: 10,
-        checklist: Array.isArray(routine.checklist) ? routine.checklist : [],
-        status: "active" as EventStatus,
-        transportMode: "driving" as TransportMode
-      }));
+      .map((routine) => {
+        const campusCoords = (routine.location_coords?.lat && routine.location_coords?.lon && (routine.location_coords.lat !== 0 || routine.location_coords.lon !== 0))
+          ? routine.location_coords
+          : (defaultCampus?.coords?.lat && defaultCampus?.coords?.lon ? defaultCampus.coords : { lat: 0, lon: 0 });
+
+        const isGenericAula = !routine.location_name || routine.location_name.toLowerCase() === "aula";
+        const campusName = defaultCampus?.name ? `Presso: ${defaultCampus.name}` : "";
+        const formattedDestName = isGenericAula 
+          ? (defaultCampus?.name || "Campus Universitario")
+          : (campusName ? `${routine.location_name} • ${campusName}` : routine.location_name);
+
+        return {
+          id: `routine_${routine.id}_${dateStr}`,
+          title: routine.title,
+          category: "Lavoro" as EventCategory,
+          date: dateStr,
+          targetTime: routine.start_time || "09:00",
+          destinationName: formattedDestName,
+          destinationCoords: campusCoords,
+          origin_type: "live" as const,
+          origin_coords: null,
+          origin_address: null,
+          bufferMinutes: 10,
+          checklist: Array.isArray(routine.checklist) ? routine.checklist : [],
+          status: "active" as EventStatus,
+          transportMode: "driving" as TransportMode
+        };
+      });
 
     return [...explicitEvents, ...projectedRoutines];
   };
@@ -3712,21 +3724,23 @@ export default function Dashboard() {
         const oLat = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lat : null;
         const oLon = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lon : null;
 
-        let dLat = mapsTargetEvent.destinationCoords?.lat;
-        let dLon = mapsTargetEvent.destinationCoords?.lon;
-        
-        // Failsafe array detection
+        let rawLat = mapsTargetEvent.destinationCoords?.lat;
+        let rawLon = mapsTargetEvent.destinationCoords?.lon;
         if (Array.isArray(mapsTargetEvent.destinationCoords)) {
-           dLat = mapsTargetEvent.destinationCoords[1];
-           dLon = mapsTargetEvent.destinationCoords[0];
+           rawLat = mapsTargetEvent.destinationCoords[1];
+           rawLon = mapsTargetEvent.destinationCoords[0];
         }
+
+        // Strictly enforce campus coordinates if raw event coords are missing or zero
+        const targetLat = (rawLat && rawLat !== 0) ? rawLat : defaultCampus?.coords?.lat;
+        const targetLon = (rawLon && rawLon !== 0) ? rawLon : defaultCampus?.coords?.lon;
 
         const dName = encodeURIComponent(mapsTargetEvent.destinationName);
 
-        // Google Maps URL
+        // Google Maps URL: Always prioritize exact coordinates lat,lon
         let gmapsUrl = `https://www.google.com/maps/dir/?api=1&travelmode=${gmapMode}`;
-        if (dLat !== undefined && dLon !== undefined) {
-          gmapsUrl += `&destination=${dLat},${dLon}`;
+        if (targetLat !== undefined && targetLon !== undefined) {
+          gmapsUrl += `&destination=${targetLat},${targetLon}`;
         } else {
           gmapsUrl += `&destination=${dName}`;
         }
@@ -3734,10 +3748,10 @@ export default function Dashboard() {
           gmapsUrl += `&origin=${oLat},${oLon}`;
         }
 
-        // Apple Maps URL
+        // Apple Maps URL: Always prioritize exact coordinates lat,lon
         let amapsUrl = `https://maps.apple.com/?dirflg=${amapMode}`;
-        if (dLat !== undefined && dLon !== undefined) {
-          amapsUrl += `&daddr=${dLat},${dLon}`;
+        if (targetLat !== undefined && targetLon !== undefined) {
+          amapsUrl += `&daddr=${targetLat},${targetLon}`;
         } else {
           amapsUrl += `&daddr=${dName}`;
         }
