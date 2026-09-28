@@ -5051,7 +5051,7 @@ export default function Dashboard() {
                     type="time"
                     value={newRoutineStartTime}
                     onChange={(e) => setNewRoutineStartTime(e.target.value)}
-                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
                 <div className="flex-1 flex flex-col gap-1 min-w-0">
@@ -5060,7 +5060,7 @@ export default function Dashboard() {
                     type="time"
                     value={newRoutineEndTime}
                     onChange={(e) => setNewRoutineEndTime(e.target.value)}
-                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                    className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
               </div>
