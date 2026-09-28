@@ -233,8 +233,9 @@ export default function Dashboard() {
   const [baseSuggestions, setBaseSuggestions] = useState<LocationSuggestion[]>([]);
   const [isSearchingBase, setIsSearchingBase] = useState(false);
 
-  // Maps Chooser Modal State
+  // Maps Chooser & Delete Confirmation Modal State
   const [mapsTargetEvent, setMapsTargetEvent] = useState<MasterEvent | null>(null);
+  const [deleteConfirmationEvent, setDeleteConfirmationEvent] = useState<MasterEvent | null>(null);
 
   // History Modal State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -578,7 +579,7 @@ export default function Dashboard() {
   const watchIdRef = useRef<number | null>(null);
 
   // Modal Scroll Lock Effect
-  const isAnyModalOpen = isFabOpen || isSettingsOpen || isHistoryOpen || isLocationModalOpen || isBookmarkModalOpen || !!mapsTargetEvent || isAuthModalOpen || isIosInstallModalOpen;
+  const isAnyModalOpen = isFabOpen || isSettingsOpen || isHistoryOpen || isLocationModalOpen || isBookmarkModalOpen || !!mapsTargetEvent || !!deleteConfirmationEvent || isAuthModalOpen || isIosInstallModalOpen;
 
   useEffect(() => {
     if (isAnyModalOpen) {
@@ -1836,17 +1837,31 @@ export default function Dashboard() {
   };
 
   // Actions with Supabase Cloud Sync
-  const deleteEvent = async (id: string) => {
-    if (window.confirm("Sei sicuro di voler eliminare definitivamente questo evento?")) {
-      setMasterEvents((prev) => prev.filter((e) => e.id !== id));
+  const performDeleteEvent = async (ev: MasterEvent) => {
+    setMasterEvents((prev) => prev.filter((e) => e.id !== ev.id));
+    if (ev.id.startsWith("routine_")) {
+      const routineDbId = ev.id.replace(/^routine_/, "").replace(/_\d{4}-\d{2}-\d{2}$/, "");
+      setUserRoutines((prev) => prev.filter((r) => r.id !== routineDbId));
       if (authUser && supabase && isSupabaseConfigured) {
         try {
-          await supabase.from("events").delete().eq("id", id).eq("user_id", authUser.id);
+          await supabase.from("user_routines").delete().eq("id", routineDbId).eq("user_id", authUser.id);
+        } catch (e) {
+          console.warn("Supabase routine delete error:", e);
+        }
+      }
+    } else {
+      if (authUser && supabase && isSupabaseConfigured) {
+        try {
+          await supabase.from("events").delete().eq("id", ev.id).eq("user_id", authUser.id);
         } catch (e) {
           console.warn("Supabase delete error:", e);
         }
       }
     }
+  };
+
+  const deleteEvent = (event: MasterEvent) => {
+    setDeleteConfirmationEvent(event);
   };
 
   const completeEvent = async (id: string) => {
@@ -2373,7 +2388,7 @@ export default function Dashboard() {
         <Pencil className="w-4 h-4" />
       </button>
       <button
-        onClick={() => deleteEvent(event.id)}
+        onClick={() => deleteEvent(event)}
         className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
         title="Elimina"
       >
@@ -3710,6 +3725,41 @@ export default function Dashboard() {
             </div>
 
             <div className="h-4 sm:h-0" />
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM APPLE-STYLE DELETE CONFIRMATION MODAL */}
+      {deleteConfirmationEvent && (
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-sm rounded-t-[32px] sm:rounded-[32px] p-6 shadow-2xl animate-in slide-in-from-bottom-full sm:zoom-in-95 duration-300 relative text-center">
+            <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center mx-auto mb-3 shadow-xs">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 mb-1">Elimina Impegno</h3>
+            <p className="text-xs text-slate-500 font-medium mb-6 leading-relaxed px-2">
+              Sei sicuro di voler eliminare definitivamente <strong className="text-slate-800 font-semibold">"{deleteConfirmationEvent.title}"</strong>? L'azione non può essere annullata.
+            </p>
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  const ev = deleteConfirmationEvent;
+                  setDeleteConfirmationEvent(null);
+                  await performDeleteEvent(ev);
+                }}
+                className="w-full py-3 px-4 bg-red-600 hover:bg-red-700 active:scale-[0.98] text-white font-bold text-xs rounded-2xl shadow-sm transition-all"
+              >
+                Elimina Definitivamente
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmationEvent(null)}
+                className="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 active:scale-[0.98] text-slate-700 font-bold text-xs rounded-2xl transition-all"
+              >
+                Annulla
+              </button>
+            </div>
           </div>
         </div>
       )}
