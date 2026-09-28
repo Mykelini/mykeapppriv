@@ -242,6 +242,27 @@ export default function Dashboard() {
   // History Modal State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
+  // In-App Toast & Form Validation Feedback State
+  type ToastType = "error" | "warning" | "success";
+  type ToastMessage = { id: string; type: ToastType; text: string };
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+
+  const showToast = (text: string, type: ToastType = "error") => {
+    const id = Date.now().toString();
+    setToast({ id, type, text });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => {
+      setToast(null);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  // Form Field Validation Highlight States
+  const [invalidFields, setInvalidFields] = useState<{ title?: boolean; date?: boolean; time?: boolean }>({});
+
   // Modal Form & Edit State
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
@@ -482,11 +503,11 @@ export default function Dashboard() {
   const handleAddRoutine = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoutineTitle.trim() || !newRoutineStartTime || !newRoutineEndTime) {
-      alert("Compila materia, orario inizio e orario fine!");
+      showToast("Compila materia, orario inizio e orario fine!", "warning");
       return;
     }
     if (selectedNewRoutineDays.length === 0) {
-      alert("Seleziona almeno un giorno per la lezione!");
+      showToast("Seleziona almeno un giorno per la lezione!", "warning");
       return;
     }
 
@@ -795,7 +816,7 @@ export default function Dashboard() {
         setIsSearchingAddress(false);
       }
     } catch (e) {
-      alert("Permesso per gli appunti negato o impossibile incollare.");
+      showToast("Permesso per gli appunti negato o impossibile incollare.", "warning");
     }
   };
 
@@ -942,7 +963,7 @@ export default function Dashboard() {
 
       if (error) {
         console.error("Fetch error:", error);
-        alert("Errore caricamento impegni: " + error.message);
+        showToast("Errore caricamento impegni: " + error.message, "error");
         return;
       }
       if (data) {
@@ -1551,7 +1572,8 @@ export default function Dashboard() {
     }
 
     if (!("Notification" in window)) {
-      return alert("Le notifiche non sono supportate da questo browser.");
+      showToast("Le notifiche non sono supportate da questo browser.", "warning");
+      return;
     }
 
     try {
@@ -1592,11 +1614,11 @@ export default function Dashboard() {
         }
       } else {
         setNotificationsEnabled(false);
-        alert("Permesso notifiche negato.");
+        showToast("Permesso notifiche negato.", "warning");
       }
     } catch (err) {
       console.error("Error setting up notifications:", err);
-      alert("Impossibile attivare le notifiche.");
+      showToast("Impossibile attivare le notifiche.", "error");
     }
   };
 
@@ -1652,7 +1674,10 @@ export default function Dashboard() {
 
   // Save new custom Bookmark
   const handleSaveBookmark = async () => {
-    if (!newBookmarkName.trim()) return alert("Inserisci un nome per il segnaposto!");
+    if (!newBookmarkName.trim()) {
+      showToast("Inserisci un nome per il segnaposto!", "warning");
+      return;
+    }
     let coords = selectedBookmarkCoords ? { lat: selectedBookmarkCoords.lat, lon: selectedBookmarkCoords.lon } : null;
     let addr = selectedBookmarkCoords ? selectedBookmarkCoords.name : newBookmarkAddressQuery.trim();
 
@@ -1664,7 +1689,10 @@ export default function Dashboard() {
       }
     }
 
-    if (!coords) return alert("Indirizzo non valido o non trovato.");
+    if (!coords) {
+      showToast("Indirizzo non valido o non trovato.", "error");
+      return;
+    }
 
     const newPlace: SavedPlace = {
       id: "place_" + Date.now(),
@@ -1776,6 +1804,7 @@ export default function Dashboard() {
   ]);
 
   const resetNewEventForm = (dateFallback?: string) => {
+    setInvalidFields({});
     setNewEventTitle("");
     setAddressQuery("");
     setSelectedDest(null);
@@ -1794,6 +1823,7 @@ export default function Dashboard() {
   };
 
   const openNewEventModal = (dateFallback?: string) => {
+    setInvalidFields({});
     setEditingEventId(null);
     const savedDraft = sessionStorage.getItem("ontime_event_draft");
     if (savedDraft) {
@@ -1967,7 +1997,7 @@ export default function Dashboard() {
   // Lock-screen Notification 5-second Tester via Service Worker
   const triggerLockScreenTest = async () => {
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-      alert("Il tuo browser non supporta i Service Worker per le notifiche in background.");
+      showToast("Il tuo browser non supporta i Service Worker per le notifiche in background.", "warning");
       return;
     }
 
@@ -1975,7 +2005,7 @@ export default function Dashboard() {
     if (perm !== "granted") {
       perm = await Notification.requestPermission();
       if (perm !== "granted") {
-        alert("Permesso per le notifiche negato!");
+        showToast("Permesso per le notifiche negato!", "warning");
         return;
       }
       setNotificationsEnabled(true);
@@ -2003,12 +2033,11 @@ export default function Dashboard() {
           body: "Test blocco schermo riuscito! L'allarme funziona a schermo spento."
         });
         
-        // Show visual feedback (we use an alert or a custom toast state here, alert is easier but less pretty, let's use a temporary state if it existed or just alert/toast)
-        alert("Notifica inviata. Se premi il tasto di blocco, la seconda notifica arriverà tra 5 secondi!");
+        showToast("Notifica inviata! Se blocchi lo schermo, la seconda notifica arriverà tra 5 secondi.", "success");
       }
     } catch (err) {
       console.error("Lock screen test error:", err);
-      alert("Errore nell'avvio del test di notifica.");
+      showToast("Errore nell'avvio del test di notifica.", "error");
     }
   };
 
@@ -2090,14 +2119,42 @@ export default function Dashboard() {
 
   const handleSaveEvent = async () => {
     if (!authUser || !supabase) {
-      alert("Effettua il login per salvare e sincronizzare i tuoi impegni.");
+      showToast("Effettua il login per salvare e sincronizzare i tuoi impegni.", "warning");
       return;
     }
 
-    if (!newEventTitle.trim() || !newEventTime || !newEventDate) {
-      return alert("Compila titolo, data e orario!");
+    const titleMissing = !newEventTitle.trim();
+    const timeMissing = !newEventTime;
+    
+    // Robust Date Validation (prevent dates like 31 September or 30 February)
+    let dateInvalid = !newEventDate;
+    if (newEventDate) {
+      const [yStr, mStr, dStr] = newEventDate.split("-");
+      const y = parseInt(yStr, 10);
+      const m = parseInt(mStr, 10);
+      const d = parseInt(dStr, 10);
+      const testDate = new Date(y, m - 1, d);
+      if (
+        isNaN(testDate.getTime()) ||
+        testDate.getFullYear() !== y ||
+        testDate.getMonth() + 1 !== m ||
+        testDate.getDate() !== d
+      ) {
+        dateInvalid = true;
+      }
     }
 
+    if (titleMissing || dateInvalid || timeMissing) {
+      setInvalidFields({ title: titleMissing, date: dateInvalid, time: timeMissing });
+      if (dateInvalid && newEventDate) {
+        showToast("Data non valida (es. settembre ha 30 giorni). Controlla la data!", "error");
+      } else {
+        showToast("Compila tutti i campi obbligatori (Titolo, Data e Orario).", "warning");
+      }
+      return;
+    }
+
+    setInvalidFields({});
     setIsSaving(true);
 
     let destCoords = selectedDest ? { lat: selectedDest.lat, lon: selectedDest.lon } : null;
@@ -2113,7 +2170,8 @@ export default function Dashboard() {
         destCoords = { lat: currentLoc.lat, lon: currentLoc.lon };
       } else {
         setIsSaving(false);
-        return alert("Indirizzo non trovato.");
+        showToast("Indirizzo non trovato. Inserisci una destinazione valida.", "error");
+        return;
       }
     }
 
@@ -2121,7 +2179,9 @@ export default function Dashboard() {
       if (currentLoc) {
         destCoords = currentLoc;
       } else {
-        return alert("Devi fornire una posizione GPS attiva o inserire un indirizzo valido.");
+        setIsSaving(false);
+        showToast("Fornisci una posizione GPS attiva o un indirizzo valido.", "error");
+        return;
       }
     }
 
@@ -2204,11 +2264,11 @@ export default function Dashboard() {
             
           if (error) {
             console.error("Supabase update error:", error);
-            alert("Errore salvataggio cloud: " + error.message);
+            showToast("Errore salvataggio cloud: " + error.message, "error");
           }
         } catch (e: any) {
           console.error("Supabase update error:", e);
-          alert("Errore salvataggio cloud: " + e.message);
+          showToast("Errore salvataggio cloud: " + (e.message || "Errore sconosciuto"), "error");
         }
       }
     } else {
@@ -2257,11 +2317,11 @@ export default function Dashboard() {
           }]).select();
           if (error) {
              console.error("Supabase insert error:", error);
-             alert("Errore salvataggio cloud: " + error.message);
+             showToast("Errore salvataggio cloud: " + error.message, "error");
           }
         } catch (e: any) {
           console.error("Supabase insert error:", e);
-          alert("Errore salvataggio cloud: " + e.message);
+          showToast("Errore salvataggio cloud: " + (e.message || "Errore sconosciuto"), "error");
         }
       }
     }
@@ -2595,6 +2655,37 @@ export default function Dashboard() {
 
   return (
     <main className="flex flex-col min-h-screen h-auto bg-[#F5F5F7] pb-24 relative overflow-y-auto overscroll-y-contain font-sans">
+      {/* NATIVE APPLE-STYLE IN-APP TOAST NOTIFICATION */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[110] max-w-sm w-[90%] sm:w-auto animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-none">
+          <div className={`px-4 py-3 rounded-2xl shadow-xl backdrop-blur-md border flex items-center gap-3 transition-all pointer-events-auto ${
+            toast.type === "error"
+              ? "bg-rose-50/95 border-rose-200 text-rose-900 shadow-rose-900/10"
+              : toast.type === "warning"
+              ? "bg-amber-50/95 border-amber-200 text-amber-900 shadow-amber-900/10"
+              : "bg-emerald-50/95 border-emerald-200 text-emerald-900 shadow-emerald-900/10"
+          }`}>
+            <span className="shrink-0 flex items-center justify-center">
+              {toast.type === "error" ? (
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-500 ring-4 ring-rose-200" />
+              ) : toast.type === "warning" ? (
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500 ring-4 ring-amber-200" />
+              ) : (
+                <Check className="w-4 h-4 text-emerald-600 stroke-[3]" />
+              )}
+            </span>
+            <p className="text-xs font-bold leading-snug flex-1">{toast.text}</p>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="text-slate-400 hover:text-slate-600 transition-colors p-0.5 ml-1"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-md mx-auto w-full flex flex-col flex-1">
         {/* HEADER - DECLUTTERED APPLE STYLE */}
         <header 
@@ -4323,6 +4414,9 @@ export default function Dashboard() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setNewEventTitle(val);
+                    if (val.trim() && invalidFields.title) {
+                      setInvalidFields((prev) => ({ ...prev, title: false }));
+                    }
                     const lower = val.toLowerCase();
                     const examKeywords = ["esame", "parziale", "esonero", "orale", "scritto", "appello", "voto"];
                     const studyKeywords = ["studio", "lezione", "università", "universita", "unical", "ripasso", "corso", "scuola", "tesi", "fisica", "analisi", "mate"];
@@ -4333,7 +4427,11 @@ export default function Dashboard() {
                     }
                   }}
                   placeholder="Es. Padel, Esame Analisi, Lezione Fisica"
-                  className="w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all placeholder:text-slate-400 text-sm"
+                  className={`w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] px-4 py-3 outline-none transition-all placeholder:text-slate-400 text-sm border ${
+                    invalidFields.title
+                      ? "border-rose-400 ring-2 ring-rose-100 animate-bounce-short"
+                      : "border-transparent focus:ring-2 focus:ring-blue-500/30"
+                  }`}
                 />
               </div>
 
@@ -4699,7 +4797,7 @@ export default function Dashboard() {
                         } else if (currentLoc) {
                           setSelectedDest({ lat: currentLoc.lat, lon: currentLoc.lon, name: addressQuery.trim() });
                         } else {
-                          alert("Posizione non disponibile per il salvataggio manuale");
+                          showToast("Posizione non disponibile per il salvataggio manuale", "warning");
                         }
                         setAddressSuggestions([]);
                       }}
@@ -4722,8 +4820,17 @@ export default function Dashboard() {
                     <input
                       type="date"
                       value={newEventDate}
-                      onChange={(e) => setNewEventDate(e.target.value)}
-                      className="w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all"
+                      onChange={(e) => {
+                        setNewEventDate(e.target.value);
+                        if (invalidFields.date) {
+                          setInvalidFields((prev) => ({ ...prev, date: false }));
+                        }
+                      }}
+                      className={`w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none transition-all border ${
+                        invalidFields.date
+                          ? "border-rose-400 ring-2 ring-rose-100"
+                          : "border-transparent focus:ring-2 focus:ring-blue-500/30"
+                      }`}
                     />
                   </div>
                 </div>
@@ -4737,8 +4844,17 @@ export default function Dashboard() {
                     <input
                       type="time"
                       value={newEventTime}
-                      onChange={(e) => setNewEventTime(e.target.value)}
-                      className="w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all"
+                      onChange={(e) => {
+                        setNewEventTime(e.target.value);
+                        if (invalidFields.time) {
+                          setInvalidFields((prev) => ({ ...prev, time: false }));
+                        }
+                      }}
+                      className={`w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none transition-all border ${
+                        invalidFields.time
+                          ? "border-rose-400 ring-2 ring-rose-100"
+                          : "border-transparent focus:ring-2 focus:ring-blue-500/30"
+                      }`}
                     />
                   </div>
                 </div>
