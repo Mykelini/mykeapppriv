@@ -319,6 +319,7 @@ export default function Dashboard() {
   const [selectedRoutineDay, setSelectedRoutineDay] = useState<number>(() => {
     return new Date().getDay();
   });
+  const [selectedNewRoutineDays, setSelectedNewRoutineDays] = useState<number[]>([new Date().getDay()]);
   const [newRoutineTitle, setNewRoutineTitle] = useState("");
   const [newRoutineStartTime, setNewRoutineStartTime] = useState("");
   const [newRoutineEndTime, setNewRoutineEndTime] = useState("");
@@ -481,63 +482,75 @@ export default function Dashboard() {
       alert("Compila materia, orario inizio e orario fine!");
       return;
     }
+    if (selectedNewRoutineDays.length === 0) {
+      alert("Seleziona almeno un giorno per la lezione!");
+      return;
+    }
 
     setIsSavingRoutine(true);
-    const id = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString();
-    const newRoutine: UserRoutine = {
-      id,
-      user_id: authUser?.id,
-      day_of_week: selectedRoutineDay,
-      title: newRoutineTitle.trim(),
-      start_time: newRoutineStartTime,
-      end_time: newRoutineEndTime,
-      location_name: newRoutineLocation.trim() || "Aula",
-      location_coords: currentLoc || { lat: 39.362, lon: 16.225 },
-      transport_mode: "driving",
-      buffer_minutes: 10,
-      checklist: [],
-    };
+    const targetCoords = defaultCampus?.coords ? { lat: defaultCampus.coords.lat, lon: defaultCampus.coords.lon } : { lat: 0, lon: 0 };
+    const targetLocationName = newRoutineLocation.trim() || (defaultCampus ? defaultCampus.name : "Campus Universitario");
 
-    const updated = [...userRoutines, newRoutine];
-    setUserRoutines(updated);
-    
-    // Spawn if for today
+    const createdRoutines: UserRoutine[] = [];
     const todayDay = new Date().getDay();
-    if (newRoutine.day_of_week === todayDay) {
-      const todayStr = format(new Date(), "yyyy-MM-dd");
-      setMasterEvents((prev) => [
-        ...prev,
-        {
-          id: `routine_${newRoutine.id}_${todayStr}`,
-          title: newRoutine.title,
-          category: "Studio",
-          date: todayStr,
-          targetTime: newRoutine.start_time,
-          destinationName: newRoutine.location_name || (defaultCampus ? defaultCampus.name : "Aula"),
-          destinationCoords: newRoutine.location_coords?.lat ? newRoutine.location_coords : (defaultCampus ? defaultCampus.coords : { lat: 0, lon: 0 }),
-          bufferMinutes: 10,
-          checklist: [],
-          status: "active",
-          transportMode: "driving",
-        },
-      ]);
+    const todayStr = format(new Date(), "yyyy-MM-dd");
+
+    for (const dayOfWeek of selectedNewRoutineDays) {
+      const id = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString();
+      const newRoutine: UserRoutine = {
+        id,
+        user_id: authUser?.id,
+        day_of_week: dayOfWeek,
+        title: newRoutineTitle.trim(),
+        start_time: newRoutineStartTime,
+        end_time: newRoutineEndTime,
+        location_name: targetLocationName,
+        location_coords: targetCoords,
+        transport_mode: "driving",
+        buffer_minutes: 10,
+        checklist: [],
+      };
+      createdRoutines.push(newRoutine);
+
+      // Spawn event if for today
+      if (dayOfWeek === todayDay) {
+        setMasterEvents((prev) => [
+          ...prev,
+          {
+            id: `routine_${newRoutine.id}_${todayStr}`,
+            title: newRoutine.title,
+            category: "Studio",
+            date: todayStr,
+            targetTime: newRoutine.start_time,
+            destinationName: newRoutine.location_name,
+            destinationCoords: newRoutine.location_coords || { lat: 0, lon: 0 },
+            bufferMinutes: 10,
+            checklist: [],
+            status: "active",
+            transportMode: "driving",
+          },
+        ]);
+      }
     }
+
+    setUserRoutines((prev) => [...prev, ...createdRoutines]);
 
     if (authUser && supabase) {
       try {
-        await supabase.from("user_routines").insert([{
-          id: newRoutine.id,
+        const payload = createdRoutines.map((r) => ({
+          id: r.id,
           user_id: authUser.id,
-          day_of_week: newRoutine.day_of_week,
-          title: newRoutine.title,
-          start_time: newRoutine.start_time,
-          end_time: newRoutine.end_time,
-          location_name: newRoutine.location_name,
-          location_coords: newRoutine.location_coords,
-          transport_mode: newRoutine.transport_mode,
-          buffer_minutes: newRoutine.buffer_minutes,
-          checklist: newRoutine.checklist,
-        }]);
+          day_of_week: r.day_of_week,
+          title: r.title,
+          start_time: r.start_time,
+          end_time: r.end_time,
+          location_name: r.location_name,
+          location_coords: r.location_coords,
+          transport_mode: r.transport_mode,
+          buffer_minutes: r.buffer_minutes,
+          checklist: r.checklist,
+        }));
+        await supabase.from("user_routines").insert(payload);
       } catch (err) {
         console.error("Error inserting routine:", err);
       }
@@ -4929,6 +4942,7 @@ export default function Dashboard() {
               ) : (
                 userRoutines
                   .filter((r) => r.day_of_week === selectedRoutineDay)
+                  .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""))
                   .map((routine) => (
                     <div
                       key={routine.id}
@@ -4964,6 +4978,48 @@ export default function Dashboard() {
             <form onSubmit={handleAddRoutine} className="pt-3 border-t border-slate-100 space-y-2.5 shrink-0">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">+ Aggiungi Lezione</h3>
               
+              {/* Multi-day Selection Chips */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                  Giorni di lezione
+                </label>
+                <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/60">
+                  {[
+                    { label: "Lun", value: 1 },
+                    { label: "Mar", value: 2 },
+                    { label: "Mer", value: 3 },
+                    { label: "Gio", value: 4 },
+                    { label: "Ven", value: 5 },
+                    { label: "Sab", value: 6 },
+                    { label: "Dom", value: 0 },
+                  ].map((day) => {
+                    const isSelected = selectedNewRoutineDays.includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            if (selectedNewRoutineDays.length > 1) {
+                              setSelectedNewRoutineDays(selectedNewRoutineDays.filter((d) => d !== day.value));
+                            }
+                          } else {
+                            setSelectedNewRoutineDays([...selectedNewRoutineDays, day.value]);
+                          }
+                        }}
+                        className={`flex-1 min-w-[36px] py-1 text-[11px] font-bold rounded-lg transition-all ${
+                          isSelected
+                            ? "bg-blue-600 text-white shadow-xs"
+                            : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/50"
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div>
                 <input
                   type="text"
@@ -4974,8 +5030,8 @@ export default function Dashboard() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3 w-full">
-                <div className="flex flex-col gap-1">
+              <div className="flex flex-col sm:flex-row gap-3 w-full">
+                <div className="flex-1 flex flex-col gap-1 min-w-0">
                   <label className="text-xs font-semibold text-gray-500 uppercase">Orario Inizio</label>
                   <input
                     type="time"
@@ -4984,7 +5040,7 @@ export default function Dashboard() {
                     className="w-full h-11 px-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
-                <div className="flex flex-col gap-1">
+                <div className="flex-1 flex flex-col gap-1 min-w-0">
                   <label className="text-xs font-semibold text-gray-500 uppercase">Orario Fine</label>
                   <input
                     type="time"
