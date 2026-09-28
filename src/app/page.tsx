@@ -18,7 +18,7 @@ import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { fetchRealtimeRoute } from "@/lib/routing";
 
 // --- Types & Schema ---
-type EventCategory = "Lavoro" | "Salute" | "Personale" | "Sport" | "Studio";
+type EventCategory = "Lavoro" | "Salute" | "Personale" | "Sport" | "Studio" | "Esame";
 type EventStatus = "active" | "completed";
 type TransportMode = "driving" | "walking" | "cycling";
 
@@ -28,6 +28,7 @@ type MasterEvent = {
   category: EventCategory;
   date: string; // YYYY-MM-DD
   targetTime: string; // HH:mm
+  endTime?: string; // HH:mm
   destinationName: string;
   destinationCoords: { lat: number; lon: number };
   origin_type?: 'live' | 'bookmark' | 'custom';
@@ -87,6 +88,7 @@ const categoryStyles: Record<EventCategory, string> = {
   Salute: "border-blue-500 text-blue-700 bg-blue-500/10",
   Personale: "border-amber-500 text-amber-700 bg-amber-500/10",
   Studio: "border-indigo-500 text-indigo-700 bg-indigo-500/10",
+  Esame: "border-rose-500 text-rose-700 bg-rose-500/10",
 };
 
 // No hardcoded locations allowed
@@ -1285,9 +1287,10 @@ export default function Dashboard() {
         return {
           id: `routine_${routine.id}_${dateStr}`,
           title: routine.title,
-          category: "Lavoro" as EventCategory,
+          category: "Studio" as EventCategory,
           date: dateStr,
           targetTime: routine.start_time || "09:00",
+          endTime: routine.end_time || undefined,
           destinationName: formattedDestName,
           destinationCoords: campusCoords,
           origin_type: "live" as const,
@@ -2693,6 +2696,55 @@ export default function Dashboard() {
             </h2>
           </div>
 
+          {/* ESAME DEDICATED COUNTDOWN BANNER */}
+          {(() => {
+            const todayStrOnly = format(now, "yyyy-MM-dd");
+            const upcomingExams = masterEvents
+              .filter((e) => e.category === "Esame" && e.status === "active" && e.date >= todayStrOnly)
+              .sort((a, b) => new Date(`${a.date}T${a.targetTime}:00`).getTime() - new Date(`${b.date}T${b.targetTime}:00`).getTime());
+
+            if (upcomingExams.length === 0) return null;
+            const primaryExam = upcomingExams[0];
+            const examDateObj = parse(primaryExam.date, "yyyy-MM-dd", new Date());
+            const daysRemaining = differenceInMinutes(examDateObj, new Date(`${todayStrOnly}T00:00:00`)) / (24 * 60);
+            const MathDays = Math.ceil(daysRemaining);
+            const otherCount = upcomingExams.length - 1;
+            const formattedExamDate = format(examDateObj, "d MMMM", { locale: it });
+
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  setDateTab("tutti");
+                  setSelectedCalendarDate(primaryExam.date);
+                  setCalendarMonth(examDateObj);
+                }}
+                className="w-full text-left p-3 rounded-2xl bg-rose-50/90 border border-rose-200/90 text-rose-900 shadow-xs hover:bg-rose-100/90 transition-all flex items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-base shrink-0">🎯</span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-rose-900 truncate">
+                      Esame in arrivo: <span className="font-extrabold">{primaryExam.title}</span>
+                    </p>
+                    <p className="text-[11px] text-rose-700 font-medium truncate mt-0.5">
+                      {MathDays === 0
+                        ? "Oggi! In bocca al lupo! 🍀"
+                        : MathDays === 1
+                        ? `Domani (${formattedExamDate})`
+                        : `tra ${MathDays} giorni (${formattedExamDate})`}
+                    </p>
+                  </div>
+                </div>
+                {otherCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-200/70 text-rose-800 text-[10px] font-extrabold shrink-0">
+                    +{otherCount} altri
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+
           {/* DATE SWITCHER TABS */}
           <div className="flex bg-slate-200/60 p-1 rounded-[14px]">
             <button
@@ -3192,6 +3244,11 @@ export default function Dashboard() {
                     <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${categoryStyles[nextEvent.category]}`}>
                       {nextEvent.category}
                     </span>
+                    {nextEvent.category === "Esame" && nextEvent.date === todayStr && (
+                      <span className="px-2.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-rose-600 text-white shadow-xs animate-pulse">
+                        🎯 GIORNO D'ESAME
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-col gap-2 text-[13px] font-medium text-slate-500 mt-3">
                     <span className="flex items-center gap-2">
@@ -3307,23 +3364,89 @@ export default function Dashboard() {
             );
           })()}
 
-          {/* TIMELINE */}
+          {/* TIMELINE WITH AUTOMATIC GAP DETECTION */}
           {upcomingEvents.length > 0 && (
             <div className="mt-3">
               <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest px-1 mb-3">Prossimi Impegni</h3>
               <div className="flex flex-col gap-3">
-                {upcomingEvents.map((event) => (
-                  <div key={event.id} className="bg-white rounded-full px-4 py-2.5 shadow-sm border border-slate-100/60 flex justify-between items-center overflow-hidden">
-                    <div className="flex items-center gap-3 truncate">
-                      <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md shrink-0">
-                        {event.targetTime}
-                      </span>
-                      <span className="font-semibold text-slate-800 text-[13px] truncate">{event.title}</span>
-                      <span className="text-[11px] text-slate-400 truncate hidden sm:inline-block">&bull; {event.destinationName}</span>
-                    </div>
-                    {renderCardActionButtons(event)}
-                  </div>
-                ))}
+                {(() => {
+                  // Build full chronologically sorted timeline for Oggi including active, next, and upcoming
+                  const allTodayChronological = [...(activeEvent ? [activeEvent] : []), ...(nextEvent ? [nextEvent] : []), ...upcomingEvents]
+                    .reduce((acc: MasterEvent[], ev) => {
+                      if (!acc.some((e) => e.id === ev.id)) acc.push(ev);
+                      return acc;
+                    }, [])
+                    .sort((a, b) => a.targetTime.localeCompare(b.targetTime));
+
+                  return upcomingEvents.map((event, idx) => {
+                    // Check gap between previous event (in full timeline) and current upcoming event
+                    const currIndex = allTodayChronological.findIndex((e) => e.id === event.id);
+                    let gapElement = null;
+
+                    if (currIndex > 0) {
+                      const prevEvent = allTodayChronological[currIndex - 1];
+                      // Determine prev end time (if available) or assume 1 hour duration
+                      let prevEndMinutes: number;
+                      if (prevEvent.endTime) {
+                        const [h, m] = prevEvent.endTime.split(":").map(Number);
+                        prevEndMinutes = h * 60 + m;
+                      } else {
+                        const [h, m] = prevEvent.targetTime.split(":").map(Number);
+                        prevEndMinutes = h * 60 + m + 60; // default 1h class
+                      }
+
+                      const [currStartH, currStartM] = event.targetTime.split(":").map(Number);
+                      const currStartMinutes = currStartH * 60 + currStartM;
+                      const gapMins = currStartMinutes - prevEndMinutes;
+
+                      if (gapMins >= 45) {
+                        const gapHours = Math.floor(gapMins / 60);
+                        const gapMinutes = gapMins % 60;
+                        const suggestedDuration = Math.min(120, Math.floor(gapMins * 0.75));
+
+                        gapElement = (
+                          <div
+                            key={`gap_${prevEvent.id}_${event.id}`}
+                            className="my-1 py-2 px-3 border border-dashed border-gray-300 rounded-xl bg-gray-50/50 flex items-center justify-between text-xs text-gray-500 shadow-2xs"
+                          >
+                            <span className="font-medium text-gray-700 flex items-center gap-1.5">
+                              ☕ Pausa libera di {gapHours > 0 ? `${gapHours}h ` : ""}{gapMinutes > 0 ? `${gapMinutes}m` : ""}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStudySubject(`Studio durante pausa (${prevEvent.title} ➔ ${event.title})`);
+                                setSelectedStudyDuration(suggestedDuration);
+                                setCustomStudyInput(suggestedDuration.toString());
+                                setStudyPresetMode("custom");
+                                setIsStudyModalOpen(true);
+                              }}
+                              className="px-2.5 py-1 bg-white border border-gray-200 rounded-lg text-indigo-600 font-semibold shadow-xs hover:bg-indigo-50 transition-all flex items-center gap-1 cursor-pointer"
+                            >
+                              ⚡ Avvia Studio ({suggestedDuration}m)
+                            </button>
+                          </div>
+                        );
+                      }
+                    }
+
+                    return (
+                      <React.Fragment key={event.id}>
+                        {gapElement}
+                        <div className="bg-white rounded-full px-4 py-2.5 shadow-sm border border-slate-100/60 flex justify-between items-center overflow-hidden">
+                          <div className="flex items-center gap-3 truncate">
+                            <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md shrink-0">
+                              {event.targetTime}
+                            </span>
+                            <span className="font-semibold text-slate-800 text-[13px] truncate">{event.title}</span>
+                            <span className="text-[11px] text-slate-400 truncate hidden sm:inline-block">&bull; {event.destinationName}</span>
+                          </div>
+                          {renderCardActionButtons(event)}
+                        </div>
+                      </React.Fragment>
+                    );
+                  });
+                })()}
               </div>
             </div>
           )}
@@ -4201,12 +4324,15 @@ export default function Dashboard() {
                     const val = e.target.value;
                     setNewEventTitle(val);
                     const lower = val.toLowerCase();
-                    const studyKeywords = ["studio", "lezione", "esame", "università", "universita", "unical", "ripasso", "corso", "scuola", "tesi", "fisica", "analisi", "mate"];
-                    if (studyKeywords.some((k) => lower.includes(k))) {
+                    const examKeywords = ["esame", "parziale", "esonero", "orale", "scritto", "appello", "voto"];
+                    const studyKeywords = ["studio", "lezione", "università", "universita", "unical", "ripasso", "corso", "scuola", "tesi", "fisica", "analisi", "mate"];
+                    if (examKeywords.some((k) => lower.includes(k))) {
+                      setNewEventCategory("Esame");
+                    } else if (studyKeywords.some((k) => lower.includes(k))) {
                       setNewEventCategory("Studio");
                     }
                   }}
-                  placeholder="Es. Padel, Lezione Fisica, Spesa"
+                  placeholder="Es. Padel, Esame Analisi, Lezione Fisica"
                   className="w-full bg-[#F5F5F7] text-slate-900 font-medium rounded-[14px] px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/30 transition-all placeholder:text-slate-400 text-sm"
                 />
               </div>
@@ -4217,7 +4343,7 @@ export default function Dashboard() {
                   Categoria
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {(["Sport", "Lavoro", "Salute", "Studio", "Personale"] as EventCategory[]).map((cat) => (
+                  {(["Sport", "Lavoro", "Salute", "Studio", "Esame", "Personale"] as EventCategory[]).map((cat) => (
                     <button
                       key={cat}
                       onClick={() => setNewEventCategory(cat)}
