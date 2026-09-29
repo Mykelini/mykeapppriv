@@ -928,8 +928,9 @@ export default function Dashboard() {
       setAuthChecking(false);
       return;
     }
+    const client = supabase;
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    client.auth.getSession().then(({ data: { session } }) => {
       const user = session?.user ?? null;
       setAuthUser(user);
       if (user && user.user_metadata?.default_campus) {
@@ -941,7 +942,7 @@ export default function Dashboard() {
       } else {
         const currentLocal = getStoredCampus();
         if (currentLocal && user) {
-          supabase.auth.updateUser({ data: { default_campus: currentLocal } }).catch(() => {});
+          client.auth.updateUser({ data: { default_campus: currentLocal } }).catch(() => {});
         }
       }
       setAuthChecking(false);
@@ -949,7 +950,7 @@ export default function Dashboard() {
       setAuthChecking(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
       const user = session?.user ?? null;
       setAuthUser(user);
       if (user && user.user_metadata?.default_campus) {
