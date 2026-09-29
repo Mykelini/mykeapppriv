@@ -125,8 +125,14 @@ const getWeatherInfo = (code: number, temp: number): WeatherData => {
 export const getStoredCampus = (): CampusLocation | null => {
   if (typeof window === 'undefined') return null;
   try {
-    const data = localStorage.getItem('ontime_saved_campus');
-    return data ? JSON.parse(data) : null;
+    const data = localStorage.getItem('ontime_saved_campus') || localStorage.getItem('ontime_default_campus');
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed?.name && parsed?.coords) {
+        return parsed;
+      }
+    }
+    return null;
   } catch (e) {
     console.error("Error reading stored campus:", e);
     return null;
@@ -135,12 +141,18 @@ export const getStoredCampus = (): CampusLocation | null => {
 
 export const setStoredCampus = (campusData: CampusLocation | null) => {
   if (typeof window === 'undefined') return;
-  if (campusData) {
-    localStorage.setItem('ontime_saved_campus', JSON.stringify(campusData));
-  } else {
-    localStorage.removeItem('ontime_saved_campus');
+  try {
+    if (campusData && campusData.name && campusData.coords) {
+      localStorage.setItem('ontime_saved_campus', JSON.stringify(campusData));
+      localStorage.setItem('ontime_default_campus', JSON.stringify(campusData));
+    } else {
+      localStorage.removeItem('ontime_saved_campus');
+      localStorage.removeItem('ontime_default_campus');
+    }
+    window.dispatchEvent(new Event('ontime_campus_updated'));
+  } catch (e) {
+    console.error("Error setting stored campus:", e);
   }
-  window.dispatchEvent(new Event('ontime_campus_updated'));
 };
 
 const fetchOsrmRouteMins = async (
@@ -302,31 +314,17 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Default Campus State (Zero-flicker synchronous initial read)
-  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('ontime_saved_campus');
-      if (stored) {
-        try {
-          return JSON.parse(stored);
-        } catch (e) {
-          console.error("Error parsing stored campus:", e);
-        }
-      }
-    }
-    return null;
-  });
+  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(() => getStoredCampus());
 
   // Wire to custom and storage events for instant cross-component sync
   useEffect(() => {
     const handleSync = () => {
-      if (typeof window === 'undefined') return;
-      try {
-        const updated = localStorage.getItem('ontime_saved_campus');
-        setDefaultCampus(updated ? JSON.parse(updated) : null);
-      } catch (e) {
-        setDefaultCampus(null);
-      }
+      const stored = getStoredCampus();
+      setDefaultCampus(stored);
     };
+
+    // Immediate sync on mount
+    handleSync();
 
     window.addEventListener('ontime_campus_updated', handleSync);
     window.addEventListener('storage', handleSync);
@@ -531,8 +529,9 @@ export default function Dashboard() {
     }
 
     setIsSavingRoutine(true);
-    const targetCoords = defaultCampus?.coords ? { lat: defaultCampus.coords.lat, lon: defaultCampus.coords.lon } : { lat: 0, lon: 0 };
-    const targetLocationName = newRoutineLocation.trim() || (defaultCampus ? defaultCampus.name : "Campus Universitario");
+    const campusToUse = defaultCampus || getStoredCampus();
+    const targetCoords = campusToUse?.coords ? { lat: campusToUse.coords.lat, lon: campusToUse.coords.lon } : { lat: 39.3622, lon: 16.2263 };
+    const targetLocationName = newRoutineLocation.trim() || (campusToUse ? campusToUse.name : "Università della Calabria - Campus");
 
     const createdRoutines: UserRoutine[] = [];
     const todayDay = new Date().getDay();
@@ -872,14 +871,9 @@ export default function Dashboard() {
       if (storedMapbox) setMapboxToken(storedMapbox);
 
       // Fast-Initial Campus read
-      const localCampus = localStorage.getItem("ontime_saved_campus");
-      if (localCampus) {
-        try {
-          const parsed = JSON.parse(localCampus);
-          if (parsed?.name && parsed?.coords) {
-            setDefaultCampus(parsed);
-          }
-        } catch (e) {}
+      const initialCampus = getStoredCampus();
+      if (initialCampus) {
+        setDefaultCampus(initialCampus);
       }
 
       // 1. Force GPS as default on startup
@@ -941,8 +935,13 @@ export default function Dashboard() {
       if (user && user.user_metadata?.default_campus) {
         const metaCap = user.user_metadata.default_campus;
         if (metaCap?.name && metaCap?.coords) {
-          setDefaultCampus((prev) => prev || metaCap);
-          localStorage.setItem("ontime_saved_campus", JSON.stringify(metaCap));
+          setDefaultCampus(metaCap);
+          setStoredCampus(metaCap);
+        }
+      } else {
+        const currentLocal = getStoredCampus();
+        if (currentLocal && user) {
+          supabase.auth.updateUser({ data: { default_campus: currentLocal } }).catch(() => {});
         }
       }
       setAuthChecking(false);
@@ -956,8 +955,8 @@ export default function Dashboard() {
       if (user && user.user_metadata?.default_campus) {
         const metaCap = user.user_metadata.default_campus;
         if (metaCap?.name && metaCap?.coords) {
-          setDefaultCampus((prev) => prev || metaCap);
-          localStorage.setItem("ontime_saved_campus", JSON.stringify(metaCap));
+          setDefaultCampus(metaCap);
+          setStoredCampus(metaCap);
         }
       }
       setAuthChecking(false);
@@ -1051,7 +1050,7 @@ export default function Dashboard() {
           if (settingsData.default_transport) setDefaultTransportMode(settingsData.default_transport);
         }
 
-        // Robust Campus Resolution (Priority: DB -> Auth Metadata -> LocalStorage)
+        // Robust Campus Resolution (Priority: DB -> LocalStorage -> Auth Metadata)
         let resolvedCampus: CampusLocation | null = null;
         if (settingsData?.default_campus_name && settingsData?.default_campus_coords) {
           resolvedCampus = { name: settingsData.default_campus_name, coords: settingsData.default_campus_coords };
@@ -1062,22 +1061,21 @@ export default function Dashboard() {
           }
         }
 
-        if (!resolvedCampus && typeof window !== "undefined") {
-          const local = localStorage.getItem("ontime_saved_campus");
-          if (local) {
-            try {
-              const parsed = JSON.parse(local);
-              if (parsed?.name && parsed?.coords) {
-                resolvedCampus = parsed;
-              }
-            } catch (e) {}
-          }
+        if (!resolvedCampus) {
+          resolvedCampus = getStoredCampus();
         }
 
         if (resolvedCampus) {
-          setDefaultCampus((prev) => prev || resolvedCampus);
-          if (typeof window !== "undefined") {
-            localStorage.setItem("ontime_saved_campus", JSON.stringify(resolvedCampus));
+          setDefaultCampus(resolvedCampus);
+          setStoredCampus(resolvedCampus);
+
+          // Push to Supabase if DB missing default campus
+          if (!settingsData?.default_campus_name || !settingsData?.default_campus_coords) {
+            syncUserSetting({
+              default_campus_name: resolvedCampus.name,
+              default_campus_coords: resolvedCampus.coords,
+            });
+            client.auth.updateUser({ data: { default_campus: resolvedCampus } }).catch(() => {});
           }
         }
 
@@ -1528,15 +1526,13 @@ export default function Dashboard() {
       name: campusData.name,
       coords: { lat: campusData.coords?.lat ?? 39.3622, lon: campusData.coords?.lon ?? 16.2263 }
     };
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('ontime_saved_campus', JSON.stringify(payload));
-    }
+    
+    // Save to all localStorage keys and trigger event
+    setStoredCampus(payload);
     setDefaultCampus(payload);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('ontime_campus_updated'));
-    }
+    showToast(`Sede predefinita "${payload.name}" salvata!`, "success");
 
-    if (supabase && isSupabaseConfigured) {
+    if (supabase && isSupabaseConfigured && authUser) {
       try {
         await supabase.auth.updateUser({
           data: { default_campus: payload }
@@ -1577,15 +1573,11 @@ export default function Dashboard() {
   };
 
   const removeCampusSetting = async () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('ontime_saved_campus');
-    }
+    setStoredCampus(null);
     setDefaultCampus(null);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('ontime_campus_updated'));
-    }
+    showToast("Sede predefinita rimossa.", "warning");
 
-    if (supabase && isSupabaseConfigured) {
+    if (supabase && isSupabaseConfigured && authUser) {
       try {
         await supabase.auth.updateUser({
           data: { default_campus: null }
@@ -2427,7 +2419,7 @@ export default function Dashboard() {
       setCurrentLoc(null);
       setCurrentCity("Rilevamento in corso...");
       setIsSettingsOpen(false);
-      alert("Tutti i dati dell'applicazione sono stati cancellati.");
+      showToast("Tutti i dati dell'applicazione sono stati cancellati.", "warning");
     }
   };
 
@@ -5328,108 +5320,113 @@ export default function Dashboard() {
             </p>
 
             {/* Sede Predefinita Campus Card */}
-            <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3.5 mb-4 shrink-0">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="text-xl shrink-0">🎓</span>
-                  <div className="min-w-0">
-                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      Sede Predefinita (Università / Scuola)
-                    </h3>
-                    {defaultCampus && defaultCampus.name ? (
-                      <p className="text-[11px] font-bold text-slate-900 truncate mt-0.5">
-                        🎓 {defaultCampus.name}
-                      </p>
-                    ) : (
-                      <p className="text-[11px] font-medium text-slate-500 leading-tight mt-0.5">
-                        Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni.
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {defaultCampus && defaultCampus.name && !isEditingCampus ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={removeCampusSetting}
-                        className="px-2.5 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-colors cursor-pointer"
-                      >
-                        Rimuovi
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setIsEditingCampus(true)}
-                        className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shadow-xs cursor-pointer"
-                      >
-                        Modifica
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setIsEditingCampus(!isEditingCampus)}
-                      className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white border border-blue-600 rounded-xl hover:bg-blue-700 transition-all shadow-xs cursor-pointer"
-                    >
-                      {isEditingCampus ? "Chiudi" : "Imposta"}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {isEditingCampus && (
-                <div className="mt-3 pt-2.5 border-t border-blue-200/60 relative">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="Cerca o inserisci indirizzo/sede..."
-                      value={campusSearchQuery}
-                      onChange={(e) => setCampusSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleManualSaveCampus();
-                        }
-                      }}
-                      className="flex-1 bg-white text-slate-800 border border-blue-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleManualSaveCampus}
-                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-all shrink-0 shadow-xs"
-                    >
-                      Salva
-                    </button>
-                  </div>
-                  {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-14 top-5 pointer-events-none" />}
-
-                  {campusSuggestions.length > 0 && (
-                    <div className="bg-white rounded-xl shadow-lg border border-slate-200 mt-1 max-h-40 overflow-y-auto z-[90] relative">
-                      {campusSuggestions.map((s, idx) => (
+            {(() => {
+              const currentCampus = defaultCampus || getStoredCampus();
+              return (
+                <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3.5 mb-4 shrink-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="text-xl shrink-0">🎓</span>
+                      <div className="min-w-0">
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                          Sede Predefinita (Università / Scuola)
+                        </h3>
+                        {currentCampus && currentCampus.name ? (
+                          <p className="text-[11px] font-bold text-slate-900 truncate mt-0.5">
+                            🎓 {currentCampus.name}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] font-medium text-slate-500 leading-tight mt-0.5">
+                            Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {currentCampus && currentCampus.name && !isEditingCampus ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={removeCampusSetting}
+                            className="px-2.5 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-colors cursor-pointer"
+                          >
+                            Rimuovi
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingCampus(true)}
+                            className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shadow-xs cursor-pointer"
+                          >
+                            Modifica
+                          </button>
+                        </>
+                      ) : (
                         <button
-                          key={idx}
                           type="button"
-                          className="w-full text-left px-3 py-2 hover:bg-blue-50 text-xs flex items-center gap-2 border-b border-slate-100 last:border-0"
-                          onClick={() => {
-                            const newCap = { name: s.name, coords: { lat: s.lat, lon: s.lon } };
-                            saveCampusSetting(newCap);
-                            setIsEditingCampus(false);
-                            setCampusSearchQuery("");
-                            setCampusSuggestions([]);
-                          }}
+                          onClick={() => setIsEditingCampus(!isEditingCampus)}
+                          className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white border border-blue-600 rounded-xl hover:bg-blue-700 transition-all shadow-xs cursor-pointer"
                         >
-                          <span>{s.icon || "🎓"}</span>
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-900 truncate">{s.name}</p>
-                            <p className="text-[10px] text-slate-400 truncate">{s.secondary}</p>
-                          </div>
+                          {isEditingCampus ? "Chiudi" : "Imposta"}
                         </button>
-                      ))}
+                      )}
+                    </div>
+                  </div>
+
+                  {isEditingCampus && (
+                    <div className="mt-3 pt-2.5 border-t border-blue-200/60 relative">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="Cerca o inserisci indirizzo/sede..."
+                          value={campusSearchQuery}
+                          onChange={(e) => setCampusSearchQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleManualSaveCampus();
+                            }
+                          }}
+                          className="flex-1 bg-white text-slate-800 border border-blue-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500/30"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleManualSaveCampus}
+                          className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-all shrink-0 shadow-xs cursor-pointer"
+                        >
+                          Salva
+                        </button>
+                      </div>
+                      {isSearchingCampus && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 absolute right-16 top-5 pointer-events-none" />}
+
+                      {campusSuggestions.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-lg border border-slate-200 mt-1 max-h-40 overflow-y-auto z-[90] relative">
+                          {campusSuggestions.map((s, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              className="w-full text-left px-3 py-2 hover:bg-blue-50 text-xs flex items-center gap-2 border-b border-slate-100 last:border-0 cursor-pointer"
+                              onClick={() => {
+                                const newCap = { name: s.name, coords: { lat: s.lat, lon: s.lon } };
+                                saveCampusSetting(newCap);
+                                setIsEditingCampus(false);
+                                setCampusSearchQuery("");
+                                setCampusSuggestions([]);
+                              }}
+                            >
+                              <span>{s.icon || "🎓"}</span>
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-900 truncate">{s.name}</p>
+                                <p className="text-[10px] text-slate-400 truncate">{s.secondary}</p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Segmented Day Selector */}
             <div className="flex bg-slate-100 p-1 rounded-2xl mb-4 border border-slate-200/60 overflow-x-auto scrollbar-none shrink-0">
