@@ -235,6 +235,9 @@ export default function Dashboard() {
   const [baseSuggestions, setBaseSuggestions] = useState<LocationSuggestion[]>([]);
   const [isSearchingBase, setIsSearchingBase] = useState(false);
 
+  // Missing Campus In-App Banner State
+  const [showMissingCampusBanner, setShowMissingCampusBanner] = useState(false);
+
   // Maps Chooser & Delete Confirmation Modal State
   const [mapsTargetEvent, setMapsTargetEvent] = useState<MasterEvent | null>(null);
   const [deleteConfirmationEvent, setDeleteConfirmationEvent] = useState<MasterEvent | null>(null);
@@ -602,7 +605,7 @@ export default function Dashboard() {
   const watchIdRef = useRef<number | null>(null);
 
   // Modal Scroll Lock Effect
-  const isAnyModalOpen = isFabOpen || isSettingsOpen || isHistoryOpen || isLocationModalOpen || isBookmarkModalOpen || !!mapsTargetEvent || !!deleteConfirmationEvent || isAuthModalOpen || isIosInstallModalOpen;
+  const isAnyModalOpen = isFabOpen || isSettingsOpen || isHistoryOpen || isLocationModalOpen || isBookmarkModalOpen || !!mapsTargetEvent || !!deleteConfirmationEvent || isAuthModalOpen || isIosInstallModalOpen || showMissingCampusBanner;
 
   useEffect(() => {
     if (isAnyModalOpen) {
@@ -1187,7 +1190,7 @@ export default function Dashboard() {
       };
 
       if (!("geolocation" in navigator)) {
-        alert("La geolocalizzazione GPS non è supportata da questo browser.");
+        showToast("La geolocalizzazione GPS non è supportata da questo browser.", "warning");
         fallbackToIP();
         return;
       }
@@ -1242,27 +1245,49 @@ export default function Dashboard() {
   // LocalStorage caching is removed in favor of Supabase as single source of truth
 
   // REACTIVE ROUTE RECALCULATION when currentLoc or masterEvents change
-  // Only recalculates events where origin_coords is null (= "live GPS" mode)
   useEffect(() => {
     if (!currentLoc || masterEvents.length === 0 || !isMounted) return;
 
     const recalculateRoutes = async () => {
       let updated = false;
+      const campus = defaultCampus || getStoredCampus();
+      const safeCampusLat = campus?.coords?.lat ?? 39.3622;
+      const safeCampusLon = campus?.coords?.lon ?? 16.2263;
+
       const newEvents = await Promise.all(
         masterEvents.map(async (ev) => {
-          if (ev.status !== "active" || !ev.destinationCoords?.lat || !ev.destinationCoords?.lon) return ev;
+          if (ev.status !== "active") return ev;
           
-          // If the event has a fixed origin (e.g. "Casa"), don't override with current GPS
-          if ((ev as any).originCoords) return ev;
-          
+          const isUniv = ev.id.startsWith("routine_") || 
+            ["Studio", "Esame"].includes(ev.category) || 
+            ev.title.toLowerCase().includes("lezione") ||
+            ev.title.toLowerCase().includes("aula");
+
+          const destCoordsToUse = isUniv
+            ? { lat: safeCampusLat, lon: safeCampusLon }
+            : (ev.destinationCoords?.lat && ev.destinationCoords?.lon && ev.destinationCoords.lat !== 0)
+            ? ev.destinationCoords
+            : { lat: safeCampusLat, lon: safeCampusLon };
+
+          console.log("Routing from GPS to Campus/Destination:", {
+            title: ev.title,
+            origin: [currentLoc.lon, currentLoc.lat],
+            dest: [destCoordsToUse.lon, destCoordsToUse.lat]
+          });
+
           try {
-            const newMins = await fetchOsrmRouteMins(currentLoc, ev.destinationCoords, ev.transportMode || "driving", mapboxToken);
-            if (newMins !== ev.travelTimeMins) {
+            // 2.5s fast timeout wrapper for travel time calculation
+            const timeoutPromise = new Promise<number>((res) => setTimeout(() => res(15), 2500));
+            const routePromise = fetchOsrmRouteMins(currentLoc, destCoordsToUse, ev.transportMode || "driving", mapboxToken);
+            const newMins = await Promise.race([routePromise, timeoutPromise]);
+
+            if (newMins !== ev.travelTimeMins || isUniv) {
               updated = true;
-              return { ...ev, travelTimeMins: newMins };
+              return { ...ev, destinationCoords: destCoordsToUse, travelTimeMins: newMins };
             }
           } catch (e) {
-            console.error("Recalculation error", e);
+            console.error("Recalculation error, using fallback 15 mins:", e);
+            return { ...ev, destinationCoords: destCoordsToUse, travelTimeMins: 15 };
           }
           return ev;
         })
@@ -1274,7 +1299,7 @@ export default function Dashboard() {
     };
 
     recalculateRoutes();
-  }, [currentLoc, mapboxToken]);
+  }, [currentLoc, mapboxToken, defaultCampus]);
 
   // Helper to project routines strictly matching day_of_week for any given dateStr (yyyy-MM-dd)
   const getEffectiveEventsForDate = (dateStr: string): MasterEvent[] => {
@@ -1295,15 +1320,16 @@ export default function Dashboard() {
         );
       })
       .map((routine) => {
-        const campusCoords = (routine.location_coords?.lat && routine.location_coords?.lon && (routine.location_coords.lat !== 0 || routine.location_coords.lon !== 0))
-          ? routine.location_coords
-          : (defaultCampus?.coords?.lat && defaultCampus?.coords?.lon ? defaultCampus.coords : { lat: 0, lon: 0 });
+        const campus = defaultCampus || getStoredCampus();
+        const safeCampusLat = campus?.coords?.lat ?? 39.3622;
+        const safeCampusLon = campus?.coords?.lon ?? 16.2263;
+        const campusCoords = { lat: safeCampusLat, lon: safeCampusLon };
 
         const isGenericAula = !routine.location_name || routine.location_name.toLowerCase() === "aula";
-        const campusName = defaultCampus?.name ? `Presso: ${defaultCampus.name}` : "";
+        const campusName = campus?.name ? `Presso: ${campus.name}` : "Unical Campus";
         const formattedDestName = isGenericAula 
-          ? (defaultCampus?.name || "Campus Universitario")
-          : (campusName ? `${routine.location_name} • ${campusName}` : routine.location_name);
+          ? (campus?.name || "Università della Calabria - Unical Campus")
+          : `${routine.location_name} • ${campusName}`;
 
         return {
           id: `routine_${routine.id}_${dateStr}`,
@@ -2175,6 +2201,18 @@ export default function Dashboard() {
       }
     }
 
+    // Hard Override for University/Routine Events (Studio / Esame) to prevent binding creation location
+    const isUnivCategory = newEventCategory === "Studio" || newEventCategory === "Esame" || newEventTitle.toLowerCase().includes("lezione") || newEventTitle.toLowerCase().includes("aula");
+    if (isUnivCategory) {
+      const campus = defaultCampus || getStoredCampus();
+      const safeCampusLat = campus?.coords?.lat ?? 39.3622;
+      const safeCampusLon = campus?.coords?.lon ?? 16.2263;
+      destCoords = { lat: safeCampusLat, lon: safeCampusLon };
+      if (!selectedDest && !addressQuery.trim()) {
+        destName = campus?.name || "Università della Calabria - Unical Campus";
+      }
+    }
+
     if (!destCoords) {
       if (currentLoc) {
         destCoords = currentLoc;
@@ -2466,6 +2504,74 @@ export default function Dashboard() {
       </button>
     </div>
   );
+
+  const handleOpenMapsDirectly = (event: MasterEvent, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // 1. Coordinates for Unical Campus fallback
+    const UNICAL_LAT = 39.3622;
+    const UNICAL_LON = 16.2263;
+    const UNICAL_NAME = "Università della Calabria - Unical Campus";
+
+    const campus = defaultCampus || getStoredCampus();
+
+    // 2. Detect if current card is academic/routine
+    const isAcademic = 
+      event?.category?.toLowerCase() === 'studio' || 
+      event?.category?.toLowerCase() === 'esame' || 
+      event.id.startsWith("routine_") ||
+      event.title.toLowerCase().includes("lezione") ||
+      event.title.toLowerCase().includes("aula");
+
+    let targetLat = campus?.coords?.lat ?? UNICAL_LAT;
+    let targetLon = campus?.coords?.lon ?? UNICAL_LON;
+    let targetName = campus?.name || UNICAL_NAME;
+
+    if (!isAcademic) {
+      if (event?.destinationCoords?.lat && event?.destinationCoords?.lon && event.destinationCoords.lat !== 0) {
+        targetLat = event.destinationCoords.lat;
+        targetLon = event.destinationCoords.lon;
+        targetName = event.destinationName || event.title || "Destinazione";
+      }
+    } else {
+      // Academic / Routine event MUST ALWAYS strictly use Campus coordinates and campus name
+      if (campus?.coords?.lat && campus?.coords?.lon) {
+        targetLat = campus.coords.lat;
+        targetLon = campus.coords.lon;
+        targetName = campus.name;
+      } else {
+        targetLat = UNICAL_LAT;
+        targetLon = UNICAL_LON;
+        targetName = UNICAL_NAME;
+      }
+    }
+
+    // 3. Platform detection
+    const isIOS = typeof navigator !== 'undefined' && (/iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+    // 4. Construct URL (LATITUDE FIRST, LONGITUDE SECOND, NO saddr)
+    let mapsUrl = "";
+    if (isIOS) {
+      // Direct Apple Maps navigation to specific coordinate pin
+      mapsUrl = `maps://?daddr=${targetLat},${targetLon}&q=${encodeURIComponent(targetName)}`;
+    } else {
+      // Direct Google Maps navigation
+      mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${targetLat},${targetLon}&query=${encodeURIComponent(targetName)}`;
+    }
+
+    console.log("OPENING MAPS TO:", { targetLat, targetLon, targetName, isAcademic, url: mapsUrl });
+
+    if (isAcademic && (!campus || !campus.coords)) {
+      setShowMissingCampusBanner(true);
+      return;
+    }
+
+    // Open directly
+    window.location.href = mapsUrl;
+  };
 
   // Group completed events by date
   const groupedCompleted = completedEvents.reduce((acc, ev) => {
@@ -3275,7 +3381,7 @@ export default function Dashboard() {
                 {/* MAPS & COMPLETE ACTION BUTTONS */}
                 <div className="flex flex-col sm:flex-row gap-3">
                   <button
-                    onClick={() => setMapsTargetEvent(activeEvent)}
+                    onClick={(e) => handleOpenMapsDirectly(activeEvent, e)}
                     className="flex-1 bg-[#007AFF] text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-[#007AFF]/90 active:scale-[0.98] transition-all"
                   >
                     <Navigation2 className="w-4 h-4" /> Apri Mappe
@@ -3446,7 +3552,7 @@ export default function Dashboard() {
 
                 {/* MAPS ACTION BUTTON */}
                 <button
-                  onClick={() => setMapsTargetEvent(nextEvent)}
+                  onClick={(e) => handleOpenMapsDirectly(nextEvent, e)}
                   className="w-full bg-[#007AFF] text-white rounded-[16px] py-3.5 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm hover:bg-[#007AFF]/90 active:scale-[0.98] transition-all"
                 >
                   <Navigation2 className="w-4 h-4" /> Apri Mappe
@@ -3988,39 +4094,54 @@ export default function Dashboard() {
         const oLat = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lat : null;
         const oLon = hasCustomOrigin && mapsTargetEvent.origin_coords ? mapsTargetEvent.origin_coords.lon : null;
 
-        let rawLat = mapsTargetEvent.destinationCoords?.lat;
-        let rawLon = mapsTargetEvent.destinationCoords?.lon;
-        if (Array.isArray(mapsTargetEvent.destinationCoords)) {
-           rawLat = mapsTargetEvent.destinationCoords[1];
-           rawLon = mapsTargetEvent.destinationCoords[0];
-        }
+        const UNICAL_LAT = 39.3622;
+        const UNICAL_LON = 16.2263;
 
-        // Strictly enforce campus coordinates if raw event coords are missing or zero
-        const targetLat = (rawLat && rawLat !== 0) ? rawLat : defaultCampus?.coords?.lat;
-        const targetLon = (rawLon && rawLon !== 0) ? rawLon : defaultCampus?.coords?.lon;
+        const isAcademic = mapsTargetEvent.category === "Studio" || 
+          mapsTargetEvent.category === "Esame" || 
+          mapsTargetEvent.id.startsWith("routine_") || 
+          mapsTargetEvent.title.toLowerCase().includes("lezione") || 
+          mapsTargetEvent.title.toLowerCase().includes("aula");
 
-        const dName = encodeURIComponent(mapsTargetEvent.destinationName);
+        const campus = defaultCampus || getStoredCampus();
+        const safeCampusLat = campus?.coords?.lat ?? UNICAL_LAT;
+        const safeCampusLon = campus?.coords?.lon ?? UNICAL_LON;
+        const safeCampusName = campus?.name || "Università della Calabria - Campus";
 
-        // Google Maps URL: Always prioritize exact coordinates lat,lon
-        let gmapsUrl = `https://www.google.com/maps/dir/?api=1&travelmode=${gmapMode}`;
-        if (targetLat !== undefined && targetLon !== undefined) {
-          gmapsUrl += `&destination=${targetLat},${targetLon}`;
+        let targetLat: number;
+        let targetLon: number;
+        let targetName: string;
+
+        if (isAcademic) {
+          targetLat = safeCampusLat;
+          targetLon = safeCampusLon;
+          targetName = safeCampusName;
         } else {
-          gmapsUrl += `&destination=${dName}`;
+          let rawLat = mapsTargetEvent.destinationCoords?.lat;
+          let rawLon = mapsTargetEvent.destinationCoords?.lon;
+          if (Array.isArray(mapsTargetEvent.destinationCoords)) {
+             rawLat = (mapsTargetEvent.destinationCoords as any)[1];
+             rawLon = (mapsTargetEvent.destinationCoords as any)[0];
+          }
+          targetLat = (rawLat && rawLat !== 0) ? rawLat : safeCampusLat;
+          targetLon = (rawLon && rawLon !== 0) ? rawLon : safeCampusLon;
+          targetName = mapsTargetEvent.destinationName || mapsTargetEvent.title || safeCampusName;
         }
-        if (hasCustomOrigin && oLat !== undefined && oLon !== undefined) {
+
+        const encodedLabel = encodeURIComponent(targetName);
+
+        console.log("NAVIGATING TO:", { destLat: targetLat, destLon: targetLon, destLabel: targetName, isAcademic });
+
+        // Platform detection
+        const isApple = typeof navigator !== 'undefined' && /Mac|iPhone|iPod|iPad/i.test(navigator.userAgent);
+
+        // Apple Maps deep link with explicit coordinates (lat,lon) and drop pin label (no saddr to prevent origin confusion)
+        let amapsUrl = `https://maps.apple.com/?daddr=${targetLat},${targetLon}&q=${encodedLabel}&dirflg=${amapMode}`;
+
+        // Google Maps deep link with explicit coordinates (lat,lon) and label
+        let gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${targetLat},${targetLon}&query=${encodedLabel}&travelmode=${gmapMode}`;
+        if (hasCustomOrigin && oLat !== null && oLon !== null) {
           gmapsUrl += `&origin=${oLat},${oLon}`;
-        }
-
-        // Apple Maps URL: Always prioritize exact coordinates lat,lon
-        let amapsUrl = `https://maps.apple.com/?dirflg=${amapMode}`;
-        if (targetLat !== undefined && targetLon !== undefined) {
-          amapsUrl += `&daddr=${targetLat},${targetLon}`;
-        } else {
-          amapsUrl += `&daddr=${dName}`;
-        }
-        if (hasCustomOrigin && oLat !== undefined && oLon !== undefined) {
-          amapsUrl += `&saddr=${oLat},${oLon}`;
         }
 
         return (
@@ -4034,7 +4155,7 @@ export default function Dashboard() {
               </button>
               <h2 className="text-[22px] font-bold text-slate-900 mb-1">Apri Navigatore</h2>
               <p className="text-[13px] text-slate-500 font-medium mb-6 line-clamp-1">
-                Destinazione: {mapsTargetEvent.destinationName}
+                Destinazione: {targetName}
               </p>
 
               <div className="flex flex-col gap-3">
@@ -4072,6 +4193,59 @@ export default function Dashboard() {
           </div>
         );
       })()}
+
+      {/* MISSING CAMPUS IN-APP NOTICE BANNER SHEET */}
+      {showMissingCampusBanner && (
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-300">
+          <div className="bg-amber-50/95 border border-amber-200/90 text-amber-950 w-full max-w-md rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-7 shadow-2xl relative animate-in slide-in-from-bottom-full duration-300">
+            <button
+              onClick={() => setShowMissingCampusBanner(false)}
+              className="absolute top-5 right-5 w-8 h-8 flex items-center justify-center bg-amber-100 hover:bg-amber-200 rounded-full text-amber-800 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 border border-amber-300/80 text-2xl flex items-center justify-center shrink-0 shadow-xs">
+                🎓
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-amber-950 leading-tight">
+                  Sede Universitaria non configurata
+                </h3>
+                <p className="text-xs font-semibold text-amber-800 mt-0.5">
+                  Navigazione Lezione / Routine
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs font-medium text-amber-900 leading-relaxed mb-6">
+              Imposta la sede predefinita nell'orario per calcolare automaticamente il tragitto verso le tue lezioni.
+            </p>
+
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMissingCampusBanner(false);
+                  setIsRoutinesModalOpen(true);
+                  setIsEditingCampus(true);
+                }}
+                className="w-full py-3.5 px-4 bg-amber-600 hover:bg-amber-700 active:scale-[0.98] text-white font-bold text-xs rounded-2xl shadow-md shadow-amber-600/20 transition-all flex items-center justify-center gap-2"
+              >
+                <span>Imposta Sede Ora</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowMissingCampusBanner(false)}
+                className="w-full py-3 px-4 bg-amber-100/80 hover:bg-amber-200/80 active:scale-[0.98] text-amber-900 font-bold text-xs rounded-2xl transition-all"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LOCATION QUICK-SWITCHER MODAL */}
       {isLocationModalOpen && (
@@ -4810,13 +4984,13 @@ export default function Dashboard() {
               </div>
 
               {/* Date & Time Picker */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">
+              <div className="w-full flex flex-col sm:grid sm:grid-cols-2 gap-3.5 my-2">
+                <div className="w-full flex flex-col gap-1 min-w-0">
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                     Data
                   </label>
-                  <div className="relative">
-                    <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <div className="relative w-full">
+                    <Calendar className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="date"
                       value={newEventDate}
@@ -4826,21 +5000,21 @@ export default function Dashboard() {
                           setInvalidFields((prev) => ({ ...prev, date: false }));
                         }
                       }}
-                      className={`w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none transition-all border ${
+                      className={`w-full h-12 bg-gray-50 text-gray-800 font-medium text-sm rounded-xl pl-10 pr-3 py-2.5 outline-none transition-all border block appearance-none ${
                         invalidFields.date
                           ? "border-rose-400 ring-2 ring-rose-100"
-                          : "border-transparent focus:ring-2 focus:ring-blue-500/30"
+                          : "border-gray-200 focus:ring-2 focus:ring-blue-500"
                       }`}
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 block">
+                <div className="w-full flex flex-col gap-1 min-w-0">
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                     Orario Arrivo
                   </label>
-                  <div className="relative">
-                    <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <div className="relative w-full">
+                    <Clock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="time"
                       value={newEventTime}
@@ -4850,10 +5024,10 @@ export default function Dashboard() {
                           setInvalidFields((prev) => ({ ...prev, time: false }));
                         }
                       }}
-                      className={`w-full bg-[#F5F5F7] text-slate-900 font-medium text-xs rounded-[14px] pl-9 pr-2 py-3 outline-none transition-all border ${
+                      className={`w-full h-12 bg-gray-50 text-gray-800 font-medium text-sm rounded-xl pl-10 pr-3 py-2.5 outline-none transition-all border block appearance-none ${
                         invalidFields.time
                           ? "border-rose-400 ring-2 ring-rose-100"
-                          : "border-transparent focus:ring-2 focus:ring-blue-500/30"
+                          : "border-gray-200 focus:ring-2 focus:ring-blue-500"
                       }`}
                     />
                   </div>
