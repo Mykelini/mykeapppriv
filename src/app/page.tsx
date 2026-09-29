@@ -301,23 +301,39 @@ export default function Dashboard() {
   // Header refresh state
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Default Campus State
-  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(getStoredCampus);
+  // Default Campus State (Zero-flicker synchronous initial read)
+  const [defaultCampus, setDefaultCampus] = useState<CampusLocation | null>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('ontime_saved_campus');
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {
+          console.error("Error parsing stored campus:", e);
+        }
+      }
+    }
+    return null;
+  });
 
   // Wire to custom and storage events for instant cross-component sync
   useEffect(() => {
-    const syncCampus = () => {
-      const stored = getStoredCampus();
-      setDefaultCampus(stored);
+    const handleSync = () => {
+      if (typeof window === 'undefined') return;
+      try {
+        const updated = localStorage.getItem('ontime_saved_campus');
+        setDefaultCampus(updated ? JSON.parse(updated) : null);
+      } catch (e) {
+        setDefaultCampus(null);
+      }
     };
 
-    window.addEventListener('ontime_campus_updated', syncCampus);
-    window.addEventListener('storage', syncCampus);
-    syncCampus();
+    window.addEventListener('ontime_campus_updated', handleSync);
+    window.addEventListener('storage', handleSync);
 
     return () => {
-      window.removeEventListener('ontime_campus_updated', syncCampus);
-      window.removeEventListener('storage', syncCampus);
+      window.removeEventListener('ontime_campus_updated', handleSync);
+      window.removeEventListener('storage', handleSync);
     };
   }, []);
   const [campusSearchQuery, setCampusSearchQuery] = useState("");
@@ -1508,22 +1524,29 @@ export default function Dashboard() {
   };
 
   const saveCampusSetting = async (campusData: CampusLocation) => {
-    console.log("Saving campus confirmed:", campusData);
-    setStoredCampus(campusData);
-    setDefaultCampus(campusData);
+    const payload = {
+      name: campusData.name,
+      coords: { lat: campusData.coords?.lat ?? 39.3622, lon: campusData.coords?.lon ?? 16.2263 }
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ontime_saved_campus', JSON.stringify(payload));
+    }
+    setDefaultCampus(payload);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('ontime_campus_updated'));
+    }
 
     if (supabase && isSupabaseConfigured) {
       try {
-        const { error } = await supabase.auth.updateUser({
-          data: { default_campus: campusData }
+        await supabase.auth.updateUser({
+          data: { default_campus: payload }
         });
-        if (error) console.error("Supabase metadata save warning:", error.message);
         await syncUserSetting({
-          default_campus_name: campusData.name,
-          default_campus_coords: campusData.coords,
+          default_campus_name: payload.name,
+          default_campus_coords: payload.coords,
         });
       } catch (err) {
-        console.error("Network error saving campus metadata:", err);
+        console.error("Error persisting campus metadata in Supabase:", err);
       }
     }
   };
@@ -1532,7 +1555,7 @@ export default function Dashboard() {
     const query = campusSearchQuery.trim();
     if (!query) return;
     setIsSearchingCampus(true);
-    let coords = { lat: 39.36, lon: 16.22 };
+    let coords = { lat: 39.3622, lon: 16.2263 };
     try {
       const geoResults = await fetchSuggestions(query);
       if (geoResults.length > 0) {
@@ -1554,22 +1577,25 @@ export default function Dashboard() {
   };
 
   const removeCampusSetting = async () => {
-    console.log("Removing campus confirmed");
-    setStoredCampus(null);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('ontime_saved_campus');
+    }
     setDefaultCampus(null);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('ontime_campus_updated'));
+    }
 
     if (supabase && isSupabaseConfigured) {
       try {
-        const { error } = await supabase.auth.updateUser({
+        await supabase.auth.updateUser({
           data: { default_campus: null }
         });
-        if (error) console.error("Supabase metadata remove warning:", error.message);
         await syncUserSetting({
           default_campus_name: null,
           default_campus_coords: null,
         });
       } catch (err) {
-        console.error("Network error removing campus metadata:", err);
+        console.error("Error clearing campus in Supabase:", err);
       }
     }
   };
@@ -5302,34 +5328,52 @@ export default function Dashboard() {
             </p>
 
             {/* Sede Predefinita Campus Card */}
-            <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3 mb-4 shrink-0">
+            <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3.5 mb-4 shrink-0">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-base shrink-0">🎓</span>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-xl shrink-0">🎓</span>
                   <div className="min-w-0">
-                    <h4 className="text-xs font-bold text-slate-800">Sede Predefinita (Università / Scuola)</h4>
-                    <p className={`text-[11px] truncate ${defaultCampus ? "font-bold text-slate-900" : "font-medium text-slate-500"}`}>
-                      {defaultCampus ? defaultCampus.name : "Nessuna sede configurata"}
-                    </p>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      Sede Predefinita (Università / Scuola)
+                    </h3>
+                    {defaultCampus && defaultCampus.name ? (
+                      <p className="text-[11px] font-bold text-slate-900 truncate mt-0.5">
+                        🎓 {defaultCampus.name}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] font-medium text-slate-500 leading-tight mt-0.5">
+                        Nessuna sede configurata. Impostala qui per calcolare automaticamente il tragitto GPS verso le tue lezioni.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {defaultCampus && !isEditingCampus && (
+                  {defaultCampus && defaultCampus.name && !isEditingCampus ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={removeCampusSetting}
+                        className="px-2.5 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-colors cursor-pointer"
+                      >
+                        Rimuovi
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingCampus(true)}
+                        className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shadow-xs cursor-pointer"
+                      >
+                        Modifica
+                      </button>
+                    </>
+                  ) : (
                     <button
                       type="button"
-                      onClick={removeCampusSetting}
-                      className="px-2.5 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-colors"
+                      onClick={() => setIsEditingCampus(!isEditingCampus)}
+                      className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white border border-blue-600 rounded-xl hover:bg-blue-700 transition-all shadow-xs cursor-pointer"
                     >
-                      Rimuovi
+                      {isEditingCampus ? "Chiudi" : "Imposta"}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setIsEditingCampus(!isEditingCampus)}
-                    className="px-2.5 py-1 text-xs font-bold bg-white border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition-colors shadow-xs"
-                  >
-                    {isEditingCampus ? "Chiudi" : defaultCampus ? "Modifica" : "Imposta"}
-                  </button>
                 </div>
               </div>
 
